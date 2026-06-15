@@ -13,6 +13,8 @@ function load(){
       if(old){ items=JSON.parse(old).map(i=>({...i,location:i.bag||''})); break; }
     }
   }
+  // heal: add any category referenced by an item but missing from the cats list
+  items.forEach(it=>{ if(it.cat && !cats.includes(it.cat)) cats.push(it.cat); });
 }
 function save(){
   localStorage.setItem(K_ITEMS,JSON.stringify(items));
