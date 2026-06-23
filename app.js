@@ -1,5 +1,5 @@
-const K_ITEMS='base-inv-v6', K_CATS='base-inv-cats-v6', K_LANG='base-inv-lang';
-let items=[], cats=[], filter='all', locFilter='', catFilter='', openPanel=null, editingId=null, sLoc='';
+const K_ITEMS='base-inv-v6', K_CATS='base-inv-cats-v6', K_LANG='base-inv-lang', K_PINNED='base-inv-pinned-v6';
+let items=[], cats=[], pinnedCats=[], filter='all', locFilter='', catFilter='', openPanel=null, editingId=null, sLoc='';
 
 // ── LOAD / SAVE ──────────────────────────────────────────────────────────────
 function load(){
@@ -15,10 +15,12 @@ function load(){
   }
   // heal: add any category referenced by an item but missing from the cats list
   items.forEach(it=>{ if(it.cat && !cats.includes(it.cat)) cats.push(it.cat); });
+  pinnedCats = JSON.parse(localStorage.getItem(K_PINNED)||'[]').filter(c=>cats.includes(c));
 }
 function save(){
   localStorage.setItem(K_ITEMS,JSON.stringify(items));
   localStorage.setItem(K_CATS,JSON.stringify(cats));
+  localStorage.setItem(K_PINNED,JSON.stringify(pinnedCats));
 }
 
 // ── SEARCH ───────────────────────────────────────────────────────────────────
@@ -60,9 +62,18 @@ function setSLoc(v){
 }
 
 // ── CATEGORIES ───────────────────────────────────────────────────────────────
+function togglePin(i){
+  const c=cats[i]; if(!c) return;
+  const pi=pinnedCats.indexOf(c);
+  if(pi>=0) pinnedCats.splice(pi,1); else pinnedCats.push(c);
+  save(); refreshCatUI(); render();
+}
 function refreshCatUI(){
   document.getElementById('catList').innerHTML = cats.map((c,i)=>`
-    <div class="tag-pill">${esc(c)}<button class="tag-del" onclick="delCat(${i})">✕</button></div>`).join('');
+    <div class="tag-pill">
+      <button class="pin-btn${pinnedCats.includes(c)?' pinned':''}" onclick="togglePin(${i})" title="Pin to top">📌</button>
+      ${esc(c)}<button class="tag-del" onclick="delCat(${i})">✕</button>
+    </div>`).join('');
   const wrap=document.getElementById('chipsWrap');
   wrap.querySelectorAll('.cat-chip').forEach(e=>e.remove());
   cats.forEach(c=>{
@@ -89,6 +100,7 @@ async function delCat(i){
   const ok=await showConfirm(t().cat_del_confirm(c),'',lang==='he'?'מחק':'Delete');
   if(!ok) return;
   cats.splice(i,1);
+  pinnedCats=pinnedCats.filter(p=>p!==c);
   items.forEach(it=>{ if(it.cat===c) it.cat=cats[0]||''; });
   save(); refreshCatUI(); render();
 }
@@ -282,10 +294,17 @@ function render(){
 
   const groups={};
   filtered.forEach(it=>{ const g=it.cat||'—'; (groups[g]=groups[g]||[]).push(it); });
+  const catOrder=Object.keys(groups).sort((a,b)=>{
+    const ap=pinnedCats.includes(a),bp=pinnedCats.includes(b);
+    if(ap&&!bp) return -1; if(!ap&&bp) return 1;
+    return a.localeCompare(b,'he');
+  });
   let html='';
-  for(const [cat,gItems] of Object.entries(groups)){
+  for(const cat of catOrder){
+    const gItems=groups[cat];
     const gMiss=gItems.filter(i=>i.qty<i.target).length;
-    html+=`<div class="cat-group"><div class="cat-label">${esc(cat)}<span class="cat-status ${gMiss?'bad':'ok'}">${gMiss?gMiss+' '+t().stat_miss:'✓ '+t().chip_full}</span></div>`;
+    const pinned=pinnedCats.includes(cat);
+    html+=`<div class="cat-group"><div class="cat-label">${pinned?'<span class="cat-pin">📌</span>':''}${esc(cat)}<span class="cat-status ${gMiss?'bad':'ok'}">${gMiss?gMiss+' '+t().stat_miss:'✓ '+t().chip_full}</span></div>`;
     gItems.forEach(it=>{
       const cls=qc(it), isOpen=openPanel===it.id;
       const locBadge=it.location?`<span class="loc-badge ${it.location}">${locLabel(it.location)}</span>`:'';
