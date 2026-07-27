@@ -1,5 +1,6 @@
 const K_ITEMS='base-inv-v6', K_CATS='base-inv-cats-v6', K_LANG='base-inv-lang', K_PINNED='base-inv-pinned-v6';
 let items=[], cats=[], pinnedCats=[], filter='all', locFilter='', catFilter='', openPanel=null, editingId=null, sLoc='';
+let packTab='tobase', packDone=new Set(), packPrev=new Map();
 
 // ── LOAD / SAVE ──────────────────────────────────────────────────────────────
 function load(){
@@ -139,37 +140,74 @@ async function resetAllQty(){
   save(); render(); hideSettings();
 }
 
-// ── BRING SHEET ───────────────────────────────────────────────────────────────
-function showBring(){
-  const missing=[...items].filter(i=>i.qty<i.target)
-    .sort((a,b)=>(a.cat||'').localeCompare(b.cat||'','he')||a.name.localeCompare(b.name,'he'));
-  const el=document.getElementById('bringList');
-  if(!missing.length){ el.innerHTML=`<div class="bring-empty">${t().bring_empty}</div>`; }
-  else { el.innerHTML=missing.map(item=>`
-    <div class="bring-item" id="bi-${item.id}" onclick="toggleBringDone(${item.id})">
-      <div class="bring-check" id="bc-${item.id}"></div>
-      <div class="bring-info">
-        <div class="bring-name">${esc(item.name)}</div>
-        <div class="bring-sub">${esc(item.cat||'')}${locLabel(item.location,' · ')}</div>
-      </div>
-      <span class="bring-need" id="bn-${item.id}">${t().bring_miss(item.target-item.qty)}</span>
-    </div>`).join(''); }
-  document.getElementById('bringSheet').style.display='flex';
+// ── PACK MODE ─────────────────────────────────────────────────────────────────
+function showPack(){
+  packDone.clear(); packPrev.clear(); packTab='tobase';
+  renderPack();
+  document.getElementById('packSheet').style.display='flex';
 }
-function hideBring(){ document.getElementById('bringSheet').style.display='none'; }
-function toggleBringDone(id){
+function hidePack(){ document.getElementById('packSheet').style.display='none'; }
+function setPackTab(tab){ packTab=tab; packDone.clear(); packPrev.clear(); renderPack(); }
+function renderPack(){
+  const s=t();
+  const sortFn=(a,b)=>(a.cat||'').localeCompare(b.cat||'','he')||a.name.localeCompare(b.name,'he');
+  const list=packTab==='tobase'
+    ? items.filter(i=>i.qty<i.target||packDone.has(i.id)).sort(sortFn)
+    : items.filter(i=>i.qty>i.target||packDone.has(i.id)).sort(sortFn);
+  document.getElementById('packTabBase').className='pack-tab'+(packTab==='tobase'?' active':'');
+  document.getElementById('packTabHome').className='pack-tab'+(packTab==='tohome'?' active':'');
+  const doneCount=list.filter(i=>packDone.has(i.id)).length;
+  const pct=list.length?Math.round(doneCount/list.length*100):100;
+  setText('packProgLabel',packTab==='tobase'?s.pack_prog_base:s.pack_prog_home);
+  document.getElementById('packProgPct').textContent=pct+'%';
+  document.getElementById('packProgFill').style.width=pct+'%';
+  const el=document.getElementById('packList');
+  if(!list.length){
+    el.innerHTML=`<div class="pack-empty">${packTab==='tobase'?s.pack_done_base:s.pack_done_home}</div>`;
+    return;
+  }
+  el.innerHTML=list.map(item=>{
+    const done=packDone.has(item.id);
+    if(packTab==='tobase'){
+      const miss=done?0:item.target-item.qty;
+      return `<div class="pack-item${done?' done':''}" onclick="togglePackItem(${item.id})">
+        <div class="pack-check">${done?'✓':''}</div>
+        <div class="pack-info">
+          <div class="pack-name">${esc(item.name)}</div>
+          <div class="pack-sub">${esc(item.cat||'')}${locLabel(item.location,' · ')}</div>
+        </div>
+        ${done?'':`<span class="pack-badge need">${s.pack_need(miss)}</span>`}
+      </div>`;
+    } else {
+      const spare=done?0:item.qty-item.target;
+      return `<div class="pack-item${done?' done':''}" onclick="togglePackItem(${item.id})">
+        <div class="pack-check">${done?'✓':''}</div>
+        <div class="pack-info">
+          <div class="pack-name">${esc(item.name)}</div>
+          <div class="pack-sub">${esc(item.cat||'')}${locLabel(item.location,' · ')}</div>
+        </div>
+        ${done?'':`<span class="pack-badge spare">${s.pack_spare(spare)}</span>`}
+      </div>`;
+    }
+  }).join('');
+}
+function togglePackItem(id){
   const item=items.find(i=>i.id===id); if(!item) return;
-  const el=document.getElementById('bi-'+id); if(!el) return;
-  const done=el.classList.contains('done');
-  if(done){ item.qty=item._bp??item.qty; delete item._bp; el.classList.remove('done'); document.getElementById('bc-'+id).textContent=''; document.getElementById('bn-'+id).textContent=t().bring_miss(item.target-item.qty); }
-  else { item._bp=item.qty; item.qty=item.target; el.classList.add('done'); document.getElementById('bc-'+id).textContent='✓'; document.getElementById('bn-'+id).textContent='✓'; }
-  save(); updateStats();
+  if(packDone.has(id)){
+    item.qty=packPrev.get(id)??item.qty;
+    packDone.delete(id); packPrev.delete(id);
+  } else {
+    packPrev.set(id,item.qty);
+    packDone.add(id);
+    item.qty=item.target;
+  }
+  save(); updateStats(); renderPack();
 }
 
 // ── STEPPER ───────────────────────────────────────────────────────────────────
 function chQty(id,d){
   const it=items.find(i=>i.id===id); if(!it) return;
-  it.qty=Math.max(0,Math.min(it.target,it.qty+d));
+  it.qty=Math.max(0,it.qty+d);
   save(); refreshItem(id); updateStats();
 }
 function startEdit(id){
@@ -185,7 +223,7 @@ function finishEdit(id){
   const it=items.find(i=>i.id===id); const el=document.getElementById('sn-'+id);
   if(!it||!el) return;
   const v=parseInt(el.querySelector('input').value);
-  if(!isNaN(v)&&v>=0) it.qty=Math.min(it.target,v);
+  if(!isNaN(v)&&v>=0) it.qty=v;
   el.classList.remove('editing'); refreshItem(id); save(); updateStats();
 }
 
@@ -321,7 +359,7 @@ function render(){
             <button class="step-btn minus" onclick="chQty(${it.id},-1)">−</button>
             <div class="step-num ${cls}" id="sn-${it.id}" onclick="startEdit(${it.id})">
               <span>${it.qty}</span>
-              <input type="number" min="0" max="${it.target}" onclick="event.stopPropagation()"
+              <input type="number" min="0" onclick="event.stopPropagation()"
                 onblur="finishEdit(${it.id})"
                 onkeydown="if(event.key==='Enter'||event.key==='Tab'){event.preventDefault();finishEdit(${it.id});}if(event.key==='Escape'){editingId=null;document.getElementById('sn-${it.id}').classList.remove('editing');}">
             </div>
@@ -383,7 +421,10 @@ const STRINGS={
     chip_all:'הכל',chip_miss:'חסר',chip_full:'מלא',chip_bag:'🎒 תיק',chip_closet:'🗄️ ארון',
     fab:'+ הוסף פריט',sheet_title:'הוספת פריט',sh_name_ph:'שם הפריט...',sh_qty_ph:'יעד',sh_add:'הוסף לרשימה',sh_done:'סגור',
     search_ph:'חפש פריט...',
-    bring_title:'📋 מה להביא לבסיס',bring_empty:'🎉 הכל מלא! אין מה להביא.',bring_miss:n=>`חסר ${n}`,
+    pack_title:'📦 מצב אריזה',pack_tab_base:'📦 לבסיס',pack_tab_home:'🏡 הביתה',
+    pack_prog_base:'ארזת:',pack_prog_home:'להביא הביתה:',
+    pack_need:n=>`חסר ${n}`,pack_spare:n=>`עודף ${n}`,
+    pack_done_base:'🎉 הכל ארוז! יאללה לבסיס.',pack_done_home:'✓ הבסיס מסודר! אין עודפים.',
     settings_title:'הגדרות',sec_cats:'קטגוריות',cat_ph:'קטגוריה חדשה...',add_tag:'הוסף',close:'סגור',
     sec_data:'נתונים',export_label:'ייצא רשימה',import_label:'ייבא רשימה',
     sec_danger:'אזור סכנה',reset_btn:'🔄 אפס את כל הכמויות ל-0',reset_confirm:'לאפס את כל הכמויות ל-0?',
@@ -399,7 +440,10 @@ const STRINGS={
     chip_all:'All',chip_miss:'Missing',chip_full:'Full',chip_bag:'🎒 Bag',chip_closet:'🗄️ Closet',
     fab:'+ Add Item',sheet_title:'Add Item',sh_name_ph:'Item name...',sh_qty_ph:'Target',sh_add:'Add to list',sh_done:'Done',
     search_ph:'Search items...',
-    bring_title:'📋 What to bring',bring_empty:'🎉 All full! Nothing to bring.',bring_miss:n=>`Need ${n}`,
+    pack_title:'📦 Pack Mode',pack_tab_base:'📦 To Base',pack_tab_home:'🏡 To Home',
+    pack_prog_base:'Packed:',pack_prog_home:'Taking home:',
+    pack_need:n=>`Need ${n}`,pack_spare:n=>`Spare +${n}`,
+    pack_done_base:'🎉 All packed! Ready for base.',pack_done_home:'✓ Base is tidy! No extras.',
     settings_title:'Settings',sec_cats:'Categories',cat_ph:'New category...',add_tag:'Add',close:'Close',
     sec_data:'Data',export_label:'Export list',import_label:'Import list',
     sec_danger:'Danger zone',reset_btn:'🔄 Reset all quantities to 0',reset_confirm:'Reset all quantities to 0?',
@@ -432,7 +476,7 @@ function applyLang(){
   setText('sheetTitle',s.sheet_title); setText('sheetAddBtn',s.sh_add); setText('sheetDoneBtn',s.sh_done);
   setAttr('searchInput','placeholder',s.search_ph);
   setText('sLoc1lbl',lang==='he'?'תיק':'Bag'); setText('sLoc2lbl',lang==='he'?'ארון':'Closet');
-  setText('bringTitle',s.bring_title); setText('bringCloseBtn',s.close);
+  setText('packTitle',s.pack_title); setText('packTabBase',s.pack_tab_base); setText('packTabHome',s.pack_tab_home); setText('packCloseBtn',s.close);
   setText('settingsTitle',s.settings_title); setText('secCatsTitle',s.sec_cats);
   setAttr('newCat','placeholder',s.cat_ph); setText('addCatBtn',s.add_tag);
   setText('secDataTitle',s.sec_data); setText('exportLabel',s.export_label); setText('importLabel',s.import_label);
