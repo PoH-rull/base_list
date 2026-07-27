@@ -14,7 +14,7 @@
     <span class="topbar-sub" id="topbarSub">טוען...</span>
   </div>
   <button class="icon-btn" id="searchBtn" onclick="toggleSearch()" title="חיפוש">🔍</button>
-  <button class="icon-btn" onclick="showBring()" title="מה להביא">📋</button>
+  <button class="icon-btn" onclick="showPack()" title="מצב אריזה">📦</button>
   <button class="icon-btn" onclick="showSettings()" title="הגדרות">⚙️</button>
   <button class="icon-btn" onclick="toggleLang()" id="langBtn">EN</button>
 </div>
@@ -107,13 +107,21 @@
   </div>
 </div>
 
-<!-- BRING SHEET -->
-<div class="sheet-overlay" id="bringSheet" style="display:none" onclick="if(event.target===this)hideBring()">
+<!-- PACK MODE SHEET -->
+<div class="sheet-overlay" id="packSheet" style="display:none" onclick="if(event.target===this)hidePack()">
   <div class="sheet sheet-lg">
     <div class="sheet-handle"></div>
-    <div class="sheet-title" id="bringTitle">📋 מה להביא לבסיס</div>
-    <div id="bringList"></div>
-    <button class="sheet-add-btn" onclick="hideBring()" style="margin-top:8px" id="bringCloseBtn">סגור</button>
+    <div class="sheet-title" id="packTitle">📦 מצב אריזה</div>
+    <div class="pack-tabs">
+      <button class="pack-tab active" id="packTabBase" onclick="setPackTab('tobase')">📦 לבסיס</button>
+      <button class="pack-tab" id="packTabHome" onclick="setPackTab('tohome')">🏡 הביתה</button>
+    </div>
+    <div class="pack-progress">
+      <div class="pack-prog-row"><span id="packProgLabel">ארזת:</span><b id="packProgPct">0%</b></div>
+      <div class="pack-prog-bg"><div class="pack-prog-fill" id="packProgFill" style="width:0%"></div></div>
+    </div>
+    <div id="packList"></div>
+    <button class="sheet-add-btn" onclick="hidePack()" style="margin-top:8px" id="packCloseBtn">סגור</button>
   </div>
 </div>
 
