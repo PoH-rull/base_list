@@ -153,17 +153,18 @@ function renderPack(){
   const sortFn=(a,b)=>(a.cat||'').localeCompare(b.cat||'','he')||a.name.localeCompare(b.name,'he');
   const list=packTab==='tobase'
     ? items.filter(i=>i.qty<i.target||packDone.has(i.id)).sort(sortFn)
-    : items.filter(i=>i.qty>i.target||packDone.has(i.id)).sort(sortFn);
+    : items.filter(i=>i.location==='bag'||packDone.has(i.id)).sort(sortFn);
   document.getElementById('packTabBase').className='pack-tab'+(packTab==='tobase'?' active':'');
-  document.getElementById('packTabHome').className='pack-tab'+(packTab==='tohome'?' active':'');
+  document.getElementById('packTabHome').className='pack-tab'+(packTab==='tobag'?' active':'');
   const doneCount=list.filter(i=>packDone.has(i.id)).length;
   const pct=list.length?Math.round(doneCount/list.length*100):100;
-  setText('packProgLabel',packTab==='tobase'?s.pack_prog_base:s.pack_prog_home);
+  setText('packProgLabel',packTab==='tobase'?s.pack_prog_base:s.pack_prog_bag);
   document.getElementById('packProgPct').textContent=pct+'%';
   document.getElementById('packProgFill').style.width=pct+'%';
   const el=document.getElementById('packList');
   if(!list.length){
-    el.innerHTML=`<div class="pack-empty">${packTab==='tobase'?s.pack_done_base:s.pack_done_home}</div>`;
+    const hasBag=items.some(i=>i.location==='bag');
+    el.innerHTML=`<div class="pack-empty">${packTab==='tobase'?s.pack_done_base:(hasBag?s.pack_done_bag:s.pack_no_bag)}</div>`;
     return;
   }
   el.innerHTML=list.map(item=>{
@@ -179,14 +180,15 @@ function renderPack(){
         ${done?'':`<span class="pack-badge need">${s.pack_need(miss)}</span>`}
       </div>`;
     } else {
-      const spare=done?0:item.qty-item.target;
-      return `<div class="pack-item tohome${done?' done':''}" onclick="togglePackItem(${item.id})">
+      const spare=item.qty>item.target?item.qty-item.target:0;
+      const miss=item.qty<item.target?item.target-item.qty:0;
+      return `<div class="pack-item tobag${done?' done':''}" onclick="togglePackItem(${item.id})">
         <div class="pack-check">${done?'✓':''}</div>
         <div class="pack-info">
           <div class="pack-name">${esc(item.name)}</div>
-          <div class="pack-sub">${esc(item.cat||'')}${locLabel(item.location,' · ')}</div>
+          <div class="pack-sub">${esc(item.cat||'')}${spare?` · <span style="color:#a78bfa">+${spare} עודף</span>`:''}</div>
         </div>
-        ${done?'':`<span class="pack-badge spare">${s.pack_spare(spare)}</span>`}
+        ${!done&&miss?`<span class="pack-badge need">${s.pack_need(miss)}</span>`:''}
       </div>`;
     }
   }).join('');
@@ -194,14 +196,14 @@ function renderPack(){
 function togglePackItem(id){
   const item=items.find(i=>i.id===id); if(!item) return;
   if(packDone.has(id)){
-    item.qty=packPrev.get(id)??item.qty;
+    if(packTab==='tobase'){ item.qty=packPrev.get(id)??item.qty; }
     packDone.delete(id); packPrev.delete(id);
   } else {
-    packPrev.set(id,item.qty);
+    if(packTab==='tobase'){ packPrev.set(id,item.qty); item.qty=item.target; }
     packDone.add(id);
-    item.qty=item.target;
   }
-  save(); updateStats(); renderPack();
+  if(packTab==='tobase'){ save(); updateStats(); }
+  renderPack();
 }
 
 // ── STEPPER ───────────────────────────────────────────────────────────────────
@@ -421,10 +423,10 @@ const STRINGS={
     chip_all:'הכל',chip_miss:'חסר',chip_full:'מלא',chip_bag:'🎒 תיק',chip_closet:'🗄️ ארון',
     fab:'+ הוסף פריט',sheet_title:'הוספת פריט',sh_name_ph:'שם הפריט...',sh_qty_ph:'יעד',sh_add:'הוסף לרשימה',sh_done:'סגור',
     search_ph:'חפש פריט...',
-    pack_title:'📦 מצב אריזה',pack_tab_base:'📦 לבסיס',pack_tab_home:'🏡 הביתה',
-    pack_prog_base:'ארזת:',pack_prog_home:'להביא הביתה:',
+    pack_title:'📦 מצב אריזה',pack_tab_base:'📦 לבסיס',pack_tab_bag:'🎒 תיק',
+    pack_prog_base:'ארזת:',pack_prog_bag:'בתיק:',
     pack_need:n=>`חסר ${n}`,pack_spare:n=>`עודף ${n}`,
-    pack_done_base:'🎉 הכל ארוז! יאללה לבסיס.',pack_done_home:'✓ הבסיס מסודר! אין עודפים.',
+    pack_done_base:'🎉 הכל ארוז! יאללה לבסיס.',pack_done_bag:'✓ הכל בתיק! מוכן לצאת.',pack_no_bag:'🎒 אין פריטי תיק.\nתייג פריטים עם 🎒 בלוח העריכה.',
     settings_title:'הגדרות',sec_cats:'קטגוריות',cat_ph:'קטגוריה חדשה...',add_tag:'הוסף',close:'סגור',
     sec_data:'נתונים',export_label:'ייצא רשימה',import_label:'ייבא רשימה',
     sec_danger:'אזור סכנה',reset_btn:'🔄 אפס את כל הכמויות ל-0',reset_confirm:'לאפס את כל הכמויות ל-0?',
@@ -440,10 +442,10 @@ const STRINGS={
     chip_all:'All',chip_miss:'Missing',chip_full:'Full',chip_bag:'🎒 Bag',chip_closet:'🗄️ Closet',
     fab:'+ Add Item',sheet_title:'Add Item',sh_name_ph:'Item name...',sh_qty_ph:'Target',sh_add:'Add to list',sh_done:'Done',
     search_ph:'Search items...',
-    pack_title:'📦 Pack Mode',pack_tab_base:'📦 To Base',pack_tab_home:'🏡 To Home',
-    pack_prog_base:'Packed:',pack_prog_home:'Taking home:',
+    pack_title:'📦 Pack Mode',pack_tab_base:'📦 To Base',pack_tab_bag:'🎒 Bag',
+    pack_prog_base:'Packed:',pack_prog_bag:'In bag:',
     pack_need:n=>`Need ${n}`,pack_spare:n=>`Spare +${n}`,
-    pack_done_base:'🎉 All packed! Ready for base.',pack_done_home:'✓ Base is tidy! No extras.',
+    pack_done_base:'🎉 All packed! Ready for base.',pack_done_bag:'✓ All in bag! Ready to go.',pack_no_bag:'🎒 No bag items.\nTag items with 🎒 in their edit panel.',
     settings_title:'Settings',sec_cats:'Categories',cat_ph:'New category...',add_tag:'Add',close:'Close',
     sec_data:'Data',export_label:'Export list',import_label:'Import list',
     sec_danger:'Danger zone',reset_btn:'🔄 Reset all quantities to 0',reset_confirm:'Reset all quantities to 0?',
@@ -476,7 +478,7 @@ function applyLang(){
   setText('sheetTitle',s.sheet_title); setText('sheetAddBtn',s.sh_add); setText('sheetDoneBtn',s.sh_done);
   setAttr('searchInput','placeholder',s.search_ph);
   setText('sLoc1lbl',lang==='he'?'תיק':'Bag'); setText('sLoc2lbl',lang==='he'?'ארון':'Closet');
-  setText('packTitle',s.pack_title); setText('packTabBase',s.pack_tab_base); setText('packTabHome',s.pack_tab_home); setText('packCloseBtn',s.close);
+  setText('packTitle',s.pack_title); setText('packTabBase',s.pack_tab_base); setText('packTabHome',s.pack_tab_bag); setText('packCloseBtn',s.close);
   setText('settingsTitle',s.settings_title); setText('secCatsTitle',s.sec_cats);
   setAttr('newCat','placeholder',s.cat_ph); setText('addCatBtn',s.add_tag);
   setText('secDataTitle',s.sec_data); setText('exportLabel',s.export_label); setText('importLabel',s.import_label);
