@@ -165,7 +165,7 @@ select option{background:#1a1c26;color:#c8cfe0}
 .pack-tabs{display:flex;gap:8px;margin-bottom:18px}
 .pack-tab{flex:1;padding:14px 0;border:none;border-radius:var(--radius);font-family:'Heebo',sans-serif;font-size:14px;font-weight:700;cursor:pointer;transition:all .25s ease;background:var(--card2);color:var(--dim);-webkit-tap-highlight-color:transparent;outline:none}
 .pack-tab:first-child.active{background:linear-gradient(135deg,#2a40d4,#6175f8);color:#fff;box-shadow:0 4px 24px rgba(97,117,248,.45)}
-.pack-tab:last-child.active{background:linear-gradient(135deg,#b45309,#f59e0b);color:#fff;box-shadow:0 4px 24px rgba(245,158,11,.42)}
+.pack-tab:last-child.active{background:linear-gradient(135deg,#4a2fa8,#7c6bf0);color:#fff;box-shadow:0 4px 24px rgba(124,107,240,.45)}
 .pack-progress{margin-bottom:18px}
 .pack-prog-row{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;color:var(--dim);margin-bottom:7px}
 .pack-prog-row b{color:var(--text);font-size:16px;font-weight:900}
@@ -173,7 +173,7 @@ select option{background:#1a1c26;color:#c8cfe0}
 .pack-prog-fill{height:100%;border-radius:4px;transition:width .5s cubic-bezier(.4,0,.2,1);background:linear-gradient(90deg,#6175f8,#22c55e)}
 .pack-item{display:flex;align-items:center;gap:14px;padding:16px 14px;background:var(--card);border:1.5px solid var(--border2);border-radius:14px;margin-bottom:9px;cursor:pointer;transition:all .2s ease;user-select:none;-webkit-tap-highlight-color:transparent}
 .pack-item.tobase{border-inline-start:3px solid #6175f8}
-.pack-item.tohome{border-inline-start:3px solid #f59e0b}
+.pack-item.tobag{border-inline-start:3px solid #7c6bf0}
 .pack-item.done{opacity:.5;border-inline-start-color:var(--ok)!important}
 .pack-item.done .pack-name{text-decoration:line-through;color:var(--dim)}
 .pack-check{width:34px;height:34px;border-radius:50%;border:2px solid var(--border);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;transition:all .25s ease;background:var(--card2)}
