@@ -170,7 +170,7 @@ function renderPack(){
     const done=packDone.has(item.id);
     if(packTab==='tobase'){
       const miss=done?0:item.target-item.qty;
-      return `<div class="pack-item${done?' done':''}" onclick="togglePackItem(${item.id})">
+      return `<div class="pack-item tobase${done?' done':''}" onclick="togglePackItem(${item.id})">
         <div class="pack-check">${done?'✓':''}</div>
         <div class="pack-info">
           <div class="pack-name">${esc(item.name)}</div>
@@ -180,7 +180,7 @@ function renderPack(){
       </div>`;
     } else {
       const spare=done?0:item.qty-item.target;
-      return `<div class="pack-item${done?' done':''}" onclick="togglePackItem(${item.id})">
+      return `<div class="pack-item tohome${done?' done':''}" onclick="togglePackItem(${item.id})">
         <div class="pack-check">${done?'✓':''}</div>
         <div class="pack-info">
           <div class="pack-name">${esc(item.name)}</div>
