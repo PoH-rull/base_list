@@ -10,7 +10,7 @@ const K = {
 const S = {
   items: [], cats: [], pinned: [], collapsed: [],
   pack: { done: [], prev: {} },          // prev: qty before an item was ticked in Pack, so unticking restores it
-  prefs: { theme: 'dark', sort: 'missing', lastExport: 0, hidePacked: false },
+  prefs: { theme: 'dark', sort: 'missing', lastExport: 0, hidePacked: false, fixedOpen: false, lastDay: 0 },
   lang: 'he', view: 'inv',
   filter: { status: 'all', loc: '', cat: '', q: '' },
 };
@@ -34,6 +34,11 @@ function normalizeItems(list) {
       cat: String(i.cat || ''),
       location: ['bag', 'closet'].includes(i.location) ? i.location : '',
       note: String(i.note || ''),
+      // count = counted normally · use = consumable, drops on "day passed" · fixed = always here, tracked passively
+      kind: ['count', 'use', 'fixed'].includes(i.kind) ? i.kind : 'count',
+      useN: Math.max(1, parseInt(i.useN, 10) || 1),
+      useEvery: Math.max(1, parseInt(i.useEvery, 10) || 1),
+      useAcc: Math.max(0, Number(i.useAcc) || 0),
     };
   });
 }
@@ -81,6 +86,8 @@ const $ = sel => document.querySelector(sel);
 const byId = id => S.items.find(i => i.id === id);
 const isFull = it => it.qty >= it.target;
 const need = it => Math.max(0, it.target - it.qty);
+const quiet = it => it.kind === 'fixed' && isFull(it);   // "always here" and present: kept out of the way
+const daysLeft = it => Math.floor(it.qty / (it.useN / it.useEvery));
 const status = it => it.qty >= it.target ? 'ok' : it.qty === 0 ? 'zero' : 'low';
 const collator = () => new Intl.Collator(S.lang === 'he' ? 'he' : 'en', { numeric: true, sensitivity: 'base' });
 const sameName = (a, b) => a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
@@ -167,9 +174,13 @@ function renderHero() {
         <button class="mini-stat" data-action="loc" data-v="bag">🎒 ${st.bag}</button>
         <span class="mini-stat plain">✓ ${st.full}/${st.total}</span>
       </div>
+
     </div>
     ${done ? '' : `<button class="hero-cta" data-action="view" data-v="pack" aria-label="${esc(t('go_pack'))}">🧳<span>${t('go_pack')}</span></button>`}
-  </div>`;
+  </div>
+  ${S.items.some(i => i.kind === 'use') ? `<button class="day-btn" data-action="day-pass">
+    <span class="day-ico">☀️</span><span class="day-text"><b>${t('day_pass')}</b><small>${t('day_hint')}</small></span>
+    <span class="day-ago">${dayAgo()}</span></button>` : ''}`;
 }
 
 function renderFilters() {
@@ -199,6 +210,31 @@ function filtered() {
     (!q || i.name.toLocaleLowerCase().includes(q) || i.note.toLocaleLowerCase().includes(q)));
 }
 
+function dayAgo() {
+  const d = S.prefs.lastDay;
+  if (!d) return '';
+  const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(d).setHours(0, 0, 0, 0)) / 864e5);
+  return days <= 0 ? t('day_today') : t('day_ago', days);
+}
+
+function useBadge(it) {
+  if (it.kind !== 'use') return '';
+  const rate = it.useEvery === 1 ? t('use_rate_day', it.useN) : t('use_rate_every', it.useN, it.useEvery);
+  const left = daysLeft(it);
+  return `<span class="use-badge">⏬ ${rate}${it.qty ? ` · ${t('days_left', left)}` : ''}</span>`;
+}
+
+function quietHTML(it) {
+  return `<div class="quiet-item" data-id="${it.id}">
+    <button class="quiet-main" data-action="edit" data-id="${it.id}">
+      <span class="quiet-name">${esc(it.name)}</span>
+      ${it.location ? `<span class="quiet-loc">${it.location === 'bag' ? '🎒' : '🗄️'}</span>` : ''}
+      ${it.cat ? `<span class="quiet-cat">${esc(it.cat)}</span>` : ''}
+    </button>
+    <button class="quiet-miss" data-action="fixed-missing" data-id="${it.id}">${t('fixed_missing')}</button>
+  </div>`;
+}
+
 function itemHTML(it) {
   const st = status(it), n = need(it);
   const pct = Math.min(100, Math.round(it.qty / it.target * 100));
@@ -208,15 +244,17 @@ function itemHTML(it) {
       <span class="item-meta">
         ${n ? `<span class="need-pill">${t('need', n)}</span>` : ''}
         ${it.qty > it.target ? `<span class="spare-pill">${t('spare', it.qty - it.target)}</span>` : ''}
+        ${it.kind === 'fixed' ? `<span class="fixed-badge">🔒 ${t('kind_fixed')}</span>` : ''}
+        ${useBadge(it)}
         ${locBadge(it.location)}
         ${it.note ? `<span class="note">📝 ${esc(it.note)}</span>` : ''}
       </span>
     </button>
-    <div class="stepper">
+    ${it.kind === 'fixed' ? `<button class="have-btn" data-action="fixed-have" data-id="${it.id}">✓ ${t('fixed_have')}</button>` : `<div class="stepper">
       <button class="step-btn" data-action="dec" data-id="${it.id}" aria-label="-1"${it.qty === 0 ? ' disabled' : ''}>−</button>
       <button class="step-val" data-action="qty-input" data-id="${it.id}" aria-label="${esc(t('f_qty'))}"><b>${it.qty}</b><small>/${it.target}</small></button>
       <button class="step-btn" data-action="inc" data-id="${it.id}" aria-label="+1">+</button>
-    </div>
+    </div>`}
     <div class="item-bar"><i style="width:${pct}%"></i></div>
   </div>`;
 }
@@ -234,8 +272,9 @@ function groupHeadHTML(cat, list, collapsed) {
 function renderList() {
   const el = $('#list');
   if (!S.items.length) { el.innerHTML = ''; return; }
-  const list = filtered();
-  if (!list.length) {
+  const all = filtered();
+  const list = all.filter(i => !quiet(i)), quietList = all.filter(quiet);
+  if (!all.length) {
     el.innerHTML = `<div class="empty"><div class="empty-ico">🔎</div><p>${t('empty_filter')}</p>
       <button class="btn btn-soft" data-action="clear-filters">${t('clear_filters')}</button></div>`;
     return;
@@ -250,12 +289,29 @@ function renderList() {
     const collapsed = !searching && S.collapsed.includes(cat);
     return `<section class="group">${groupHeadHTML(cat, arr, collapsed)}
       <div class="group-body"${collapsed ? ' hidden' : ''}>${arr.map(itemHTML).join('')}</div></section>`;
-  }).join('');
+  }).join('') + quietSection(quietList, searching);
+}
+
+function quietSection(list, searching) {
+  if (!list.length) return '';
+  const open = searching || S.prefs.fixedOpen;
+  const col = collator();
+  const sorted = [...list].sort((a, b) => col.compare(a.cat, b.cat) || col.compare(a.name, b.name));
+  return `<section class="quiet">
+    <button class="quiet-head" data-action="toggle-fixed" aria-expanded="${open}">
+      <span class="quiet-ico">🔒</span>
+      <span class="quiet-title"><b>${t('fixed_sec')}</b><small>${t('fixed_sec_d')}</small></span>
+      <span class="quiet-count">${list.length}</span>
+      <span class="chev${open ? '' : ' closed'}" aria-hidden="true">▾</span>
+    </button>
+    ${open ? `<div class="quiet-body">${sorted.map(quietHTML).join('')}</div>` : ''}
+  </section>`;
 }
 
 // Update a single item row in place (no re-sort, so rows don't jump under your thumb).
 function patchItem(id) {
   const it = byId(id), el = document.querySelector(`.item[data-id="${id}"]`);
+  if (it && (quiet(it) || !el)) { renderInv(); return; }
   if (it && el) {
     el.outerHTML = itemHTML(it);
     const group = document.querySelector(`.item[data-id="${id}"]`).closest('.group');
@@ -286,6 +342,40 @@ function changeQty(id, d) {
   if (d > 0 && it.qty === it.target) {
     const el = document.querySelector(`.item[data-id="${id}"]`);
     if (el) { el.classList.add('pop'); }
+  }
+}
+
+function dayPass() {
+  const snap = S.items.map(i => ({ id: i.id, qty: i.qty, useAcc: i.useAcc }));
+  const prevDay = S.prefs.lastDay;
+  const changed = [];
+  S.items.forEach(i => {
+    if (i.kind !== 'use') return;
+    // fractional rates (1 every 14 days) accumulate until a whole unit is used
+    i.useAcc += i.useN / i.useEvery;
+    const dec = Math.floor(i.useAcc + 1e-9);
+    i.useAcc = Math.max(0, i.useAcc - dec);
+    const before = i.qty;
+    i.qty = Math.max(0, i.qty - dec);
+    if (i.qty !== before) changed.push(`${i.name} −${before - i.qty}`);
+  });
+  S.prefs.lastDay = Date.now();
+  buzz(15); save(); renderAll();
+  toast(changed.length ? t('day_done', changed.length) + ': ' + changed.join(', ') : t('day_none'), () => {
+    snap.forEach(x => { const i = byId(x.id); if (i) { i.qty = x.qty; i.useAcc = x.useAcc; } });
+    S.prefs.lastDay = prevDay; save(); renderAll();
+  });
+}
+
+function setFixed(id, have) {
+  const it = byId(id); if (!it) return;
+  const prev = it.qty;
+  it.qty = have ? it.target : 0;
+  buzz(); save(); renderInv();
+  if (have) flashItem(id);
+  else {
+    flashItem(id);
+    toast(t('fixed_marked', it.name), () => { it.qty = prev; save(); renderInv(); });
   }
 }
 
@@ -555,20 +645,20 @@ async function deleteCat(c) {
 
 // ── STARTER LIST ──────────────────────────────────────────────────────────────
 const STARTER = [
-  // [he name, en name, he cat, en cat, target, location]
+  // [he name, en name, he cat, en cat, target, location, kind, useN, useEvery]
   ['מדים', 'Uniform set', 'ביגוד', 'Clothing', 3, 'closet'],
-  ['חולצה לבנה', 'T-shirt', 'ביגוד', 'Clothing', 5, 'closet'],
-  ['גרביים', 'Socks', 'ביגוד', 'Clothing', 7, 'closet'],
-  ['תחתונים', 'Underwear', 'ביגוד', 'Clothing', 7, 'closet'],
-  ['פליז', 'Fleece', 'ביגוד', 'Clothing', 1, 'closet'],
-  ['מכנסי ספורט', 'Sweatpants', 'ביגוד', 'Clothing', 1, 'closet'],
-  ['מגבת', 'Towel', 'היגיינה', 'Hygiene', 2, 'closet'],
-  ['כפכפים', 'Flip-flops', 'היגיינה', 'Hygiene', 1, 'closet'],
-  ['שמפו', 'Shampoo', 'היגיינה', 'Hygiene', 1, 'closet'],
-  ['סבון', 'Soap', 'היגיינה', 'Hygiene', 1, 'closet'],
-  ['מברשת שיניים', 'Toothbrush', 'היגיינה', 'Hygiene', 1, 'closet'],
-  ['משחת שיניים', 'Toothpaste', 'היגיינה', 'Hygiene', 1, 'closet'],
-  ['דאודורנט', 'Deodorant', 'היגיינה', 'Hygiene', 1, 'closet'],
+  ['חולצה לבנה', 'T-shirt', 'ביגוד', 'Clothing', 5, 'closet', 'use', 1, 1],
+  ['גרביים', 'Socks', 'ביגוד', 'Clothing', 7, 'closet', 'use', 1, 1],
+  ['תחתונים', 'Underwear', 'ביגוד', 'Clothing', 7, 'closet', 'use', 1, 1],
+  ['פליז', 'Fleece', 'ביגוד', 'Clothing', 1, 'closet', 'fixed'],
+  ['מכנסי ספורט', 'Sweatpants', 'ביגוד', 'Clothing', 1, 'closet', 'fixed'],
+  ['מגבת', 'Towel', 'היגיינה', 'Hygiene', 2, 'closet', 'fixed'],
+  ['כפכפים', 'Flip-flops', 'היגיינה', 'Hygiene', 1, 'closet', 'fixed'],
+  ['שמפו', 'Shampoo', 'היגיינה', 'Hygiene', 1, 'closet', 'use', 1, 14],
+  ['סבון', 'Soap', 'היגיינה', 'Hygiene', 1, 'closet', 'use', 1, 14],
+  ['מברשת שיניים', 'Toothbrush', 'היגיינה', 'Hygiene', 1, 'closet', 'fixed'],
+  ['משחת שיניים', 'Toothpaste', 'היגיינה', 'Hygiene', 1, 'closet', 'use', 1, 21],
+  ['דאודורנט', 'Deodorant', 'היגיינה', 'Hygiene', 1, 'closet', 'use', 1, 21],
   ['מטען לטלפון', 'Phone charger', 'אלקטרוניקה', 'Electronics', 1, 'bag'],
   ['סוללה ניידת', 'Power bank', 'אלקטרוניקה', 'Electronics', 1, 'bag'],
   ['אוזניות', 'Headphones', 'אלקטרוניקה', 'Electronics', 1, 'bag'],
@@ -580,11 +670,13 @@ const STARTER = [
 function addStarter() {
   const he = S.lang === 'he';
   let added = 0, id = newId();
-  STARTER.forEach(([hn, en, hc, ec, target, location]) => {
+  STARTER.forEach(([hn, en, hc, ec, target, location, kind = 'count', useN = 1, useEvery = 1]) => {
     const name = he ? hn : en, cat = he ? hc : ec;
     if (S.items.some(i => sameName(i.name, name))) return;
     // bag items are things you own and carry; base items start empty so you count them
-    S.items.push({ id: id++, name, target, qty: location === 'bag' ? target : 0, cat, location, note: '' });
+    // "always here" items start present; everything else at base starts at 0 so you count it
+    const qty = location === 'bag' || kind === 'fixed' ? target : 0;
+    S.items.push({ id: id++, name, target, qty, cat, location, note: '', kind, useN, useEvery, useAcc: 0 });
     if (!S.cats.includes(cat)) S.cats.push(cat);
     added++;
   });
@@ -609,7 +701,10 @@ function fillForm(id) {
     mode: it ? 'edit' : 'add', id: it ? it.id : null,
     cat: it ? it.cat : defCat,
     loc: it ? it.location : (S.filter.loc || last.loc || ''),
+    kind: it ? it.kind : 'count',
   };
+  $('#fUseN').value = it ? it.useN : 1;
+  $('#fUseEvery').value = it ? it.useEvery : 1;
   $('#isTitle').textContent = it ? t('sh_edit') : t('sh_add');
   $('#fName').value = it ? it.name : '';
   $('#fTarget').value = it ? it.target : 1;
@@ -618,7 +713,7 @@ function fillForm(id) {
   $('#fNewCatRow').hidden = true; $('#fNewCat').value = '';
   $('#dupHint').hidden = true;
   $('#fName').classList.remove('invalid');
-  renderFormCats(); renderFormLoc(); renderQtyHint();
+  renderFormCats(); renderFormLoc(); renderFormKind(); renderQtyHint();
   $('#sheetActions').innerHTML = it
     ? `<button class="btn btn-danger-ghost" data-action="f-delete">🗑 ${t('delete')}</button>
        <button class="btn btn-primary grow" data-action="f-save">${t('save')}</button>`
@@ -645,6 +740,18 @@ function renderFormLoc() {
     </button>`).join('');
 }
 
+function renderFormKind() {
+  const opts = [['count', '🔢', t('kind_count'), t('kind_count_d')], ['use', '⏬', t('kind_use'), t('kind_use_d')], ['fixed', '🔒', t('kind_fixed'), t('kind_fixed_d')]];
+  $('#fKind').innerHTML = opts.map(([v, ico, title, desc]) =>
+    `<button class="kind-opt${form.kind === v ? ' active' : ''}" data-action="f-kind" data-v="${v}" aria-pressed="${form.kind === v}">
+      <span class="kind-ico">${ico}</span><span class="kind-title">${title}</span><span class="kind-desc">${desc}</span>
+    </button>`).join('');
+  $('#fUseRow').hidden = form.kind !== 'use';
+  $('#fQtyBox').hidden = form.kind === 'fixed';
+  $('#fQtyGrid').classList.toggle('single', form.kind === 'fixed');
+  renderQtyHint();
+}
+
 function formNums() {
   return {
     target: Math.max(1, parseInt($('#fTarget').value, 10) || 1),
@@ -655,6 +762,14 @@ function formNums() {
 function renderQtyHint() {
   const { target, qty } = formNums(), n = target - qty;
   const el = $('#qtyHint');
+  if (form && form.kind === 'fixed') {
+    const have = qty >= target;
+    el.className = 'qty-hint ' + (have ? 'ok' : 'bad');
+    el.innerHTML = have
+      ? `✓ ${t('fixed_here')} <button class="link" data-action="f-fixed" data-v="0">${t('fixed_missing')}</button>`
+      : `✗ ${t('fixed_gone')} <button class="link" data-action="f-fixed" data-v="1">${t('fixed_have')}</button>`;
+    return;
+  }
   el.className = 'qty-hint ' + (n > 0 ? 'bad' : 'ok');
   el.innerHTML = n > 0
     ? `${t('hint_need', n)} <button class="link" data-action="f-fill">✓ ${t('f_fill')}</button>`
@@ -679,14 +794,17 @@ function submitForm(more) {
   }
   const { target, qty } = formNums();
   const note = $('#fNote').value.trim();
+  const kind = form.kind;
+  const useN = Math.max(1, parseInt($('#fUseN').value, 10) || 1);
+  const useEvery = Math.max(1, parseInt($('#fUseEvery').value, 10) || 1);
   last.cat = form.cat; last.loc = form.loc;
   if (form.mode === 'edit') {
     const it = byId(form.id); if (!it) return;
-    Object.assign(it, { name, target, qty, cat: form.cat, location: form.loc, note });
+    Object.assign(it, { name, target, qty, cat: form.cat, location: form.loc, note, kind, useN, useEvery });
     save(); closeOverlay('itemSheet'); renderAll(); flashItem(it.id);
     return;
   }
-  const it = { id: newId(), name, target, qty, cat: form.cat, location: form.loc, note };
+  const it = { id: newId(), name, target, qty, cat: form.cat, location: form.loc, note, kind, useN, useEvery, useAcc: 0 };
   S.items.push(it);
   save(); renderAll();
   if (more) {
@@ -898,10 +1016,22 @@ const ACTIONS = {
   'pack-share': () => shareText(listText('pack')),
 
   'close-sheet': () => closeOverlay('itemSheet'),
+  'day-pass': () => dayPass(),
+  'fixed-missing': (el, id) => setFixed(id, false),
+  'fixed-have': (el, id) => setFixed(id, true),
+  'toggle-fixed': () => { S.prefs.fixedOpen = !S.prefs.fixedOpen; save(); renderList(); },
+  'f-kind': el => {
+    const prev = form.kind; form.kind = el.dataset.v;
+    // a new "always here" item is present by default
+    if (form.kind === 'fixed' && prev !== 'fixed' && form.mode === 'add') $('#fQty').value = formNums().target;
+    renderFormKind();
+  },
+  'f-fixed': el => { $('#fQty').value = el.dataset.v === '1' ? formNums().target : 0; renderQtyHint(); },
   'f-step': el => {
-    const inp = el.dataset.f === 'target' ? $('#fTarget') : $('#fQty');
-    const min = el.dataset.f === 'target' ? 1 : 0;
+    const inp = { target: $('#fTarget'), qty: $('#fQty'), useN: $('#fUseN'), useEvery: $('#fUseEvery') }[el.dataset.f];
+    const min = el.dataset.f === 'qty' ? 0 : 1;
     inp.value = Math.max(min, (parseInt(inp.value, 10) || 0) + Number(el.dataset.d));
+    if (form.kind === 'fixed' && el.dataset.f === 'target' && parseInt($('#fQty').value, 10) > 0) $('#fQty').value = inp.value;
     buzz(); renderQtyHint();
   },
   'f-fill': () => { $('#fQty').value = formNums().target; buzz(); renderQtyHint(); },
@@ -1023,6 +1153,17 @@ const STRINGS = {
     hint_need: n => `חסר ${n} —`, hint_full: 'בדיוק מה שצריך', hint_spare: n => `${n} עודף`,
     f_cat: 'קטגוריה', f_new_cat: 'חדשה', f_new_cat_ph: 'שם קטגוריה...',
     f_loc: 'איפה זה נמצא?', f_note: 'הערה', f_note_ph: 'למשל: מידה 42, בכיס הצד', optional: '(לא חובה)',
+    f_kind: 'סוג פריט',
+    kind_count: 'רגיל', kind_count_d: 'סופר כמה יש',
+    kind_use: 'מתכלה', kind_use_d: 'יורד כל יום',
+    kind_fixed: 'תמיד כאן', kind_fixed_d: 'בלי ספירה',
+    f_use_a: 'משתמש ב-', f_use_b: 'כל', f_use_c: 'ימים',
+    fixed_here: 'נמצא', fixed_gone: 'חסר', fixed_have: 'יש', fixed_missing: 'חסר?',
+    fixed_sec: 'תמיד כאן', fixed_sec_d: 'במעקב שקט — לחץ "חסר?" אם משהו נעלם',
+    fixed_marked: n => `${n} סומן כחסר`,
+    day_pass: 'עבר יום', day_hint: 'מוריד את המתכלים לפי הצריכה', day_today: 'עודכן היום', day_ago: n => n === 1 ? 'אתמול' : `לפני ${n} ימים`,
+    day_done: n => `ירד ב-${n} פריטים`, day_none: 'נרשם יום — שום דבר עוד לא נגמר',
+    use_rate_day: n => `${n} ליום`, use_rate_every: (n, d) => `${n} כל ${d} ימים`, days_left: n => `~${n} ימים`,
     add: 'הוסף', add_more: 'הוסף ועוד', save: 'שמור', delete: 'מחק', cancel: 'ביטול', confirm: 'אשר', undo: 'בטל',
     dup: n => `"${n}" כבר ברשימה`, dup_edit: 'לערוך אותו',
     added: n => `נוסף: ${n}`, deleted: n => `נמחק: ${n}`,
@@ -1079,6 +1220,17 @@ const STRINGS = {
     hint_need: n => `Missing ${n} —`, hint_full: 'Exactly what you need', hint_spare: n => `${n} spare`,
     f_cat: 'Category', f_new_cat: 'New', f_new_cat_ph: 'Category name...',
     f_loc: 'Where does it live?', f_note: 'Note', f_note_ph: 'e.g. size 42, side pocket', optional: '(optional)',
+    f_kind: 'Item type',
+    kind_count: 'Counted', kind_count_d: 'Track how many',
+    kind_use: 'Used up', kind_use_d: 'Drops daily',
+    kind_fixed: 'Always here', kind_fixed_d: 'No counting',
+    f_use_a: 'Uses', f_use_b: 'every', f_use_c: 'days',
+    fixed_here: 'Here', fixed_gone: 'Missing', fixed_have: 'Got it', fixed_missing: 'Missing?',
+    fixed_sec: 'Always here', fixed_sec_d: 'Tracked quietly — tap "Missing?" if something disappears',
+    fixed_marked: n => `${n} marked missing`,
+    day_pass: 'Day passed', day_hint: 'Lowers used-up items by their rate', day_today: 'updated today', day_ago: n => n === 1 ? 'yesterday' : `${n} days ago`,
+    day_done: n => `${n} items went down`, day_none: 'Day logged — nothing ran down yet',
+    use_rate_day: n => `${n}/day`, use_rate_every: (n, d) => `${n} every ${d} days`, days_left: n => `~${n} days`,
     add: 'Add', add_more: 'Add another', save: 'Save', delete: 'Delete', cancel: 'Cancel', confirm: 'Confirm', undo: 'Undo',
     dup: n => `"${n}" is already on the list`, dup_edit: 'Edit it',
     added: n => `Added: ${n}`, deleted: n => `Deleted: ${n}`,

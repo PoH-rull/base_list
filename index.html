@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700;800;900&display=swap">
-<link rel="stylesheet" href="style.css?v=11">
+<link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
 
@@ -87,7 +87,12 @@
     </label>
     <div class="dup-hint" id="dupHint" hidden></div>
 
-    <div class="qty-grid">
+    <div class="field">
+      <span class="field-label" data-i18n="f_kind"></span>
+      <div class="kind-pick" id="fKind"></div>
+    </div>
+
+    <div class="qty-grid" id="fQtyGrid">
       <div class="qbox">
         <span class="field-label" data-i18n="f_target"></span>
         <div class="big-stepper">
@@ -96,7 +101,7 @@
           <button data-action="f-step" data-f="target" data-d="1" aria-label="+1">+</button>
         </div>
       </div>
-      <div class="qbox">
+      <div class="qbox" id="fQtyBox">
         <span class="field-label" data-i18n="f_qty"></span>
         <div class="big-stepper">
           <button data-action="f-step" data-f="qty" data-d="-1" aria-label="-1">−</button>
@@ -106,6 +111,22 @@
       </div>
     </div>
     <div class="qty-hint" id="qtyHint"></div>
+
+    <div class="use-row" id="fUseRow" hidden>
+      <span data-i18n="f_use_a"></span>
+      <div class="mini-stepper">
+        <button data-action="f-step" data-f="useN" data-d="-1" aria-label="-1">−</button>
+        <input id="fUseN" type="number" inputmode="numeric" min="1">
+        <button data-action="f-step" data-f="useN" data-d="1" aria-label="+1">+</button>
+      </div>
+      <span data-i18n="f_use_b"></span>
+      <div class="mini-stepper">
+        <button data-action="f-step" data-f="useEvery" data-d="-1" aria-label="-1">−</button>
+        <input id="fUseEvery" type="number" inputmode="numeric" min="1">
+        <button data-action="f-step" data-f="useEvery" data-d="1" aria-label="+1">+</button>
+      </div>
+      <span data-i18n="f_use_c"></span>
+    </div>
 
     <div class="field">
       <span class="field-label" data-i18n="f_cat"></span>
@@ -146,6 +167,6 @@
 
 <input type="file" id="importFile" accept=".json,application/json" hidden>
 
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

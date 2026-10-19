@@ -5,6 +5,10 @@ A mobile-first Hebrew/English app for tracking your gear at base: what's there, 
 ## Features
 - **Gear tab:** a summary ring showing how much of your list is in place, quick +/− counters (tap the number to type one in), and grouped, collapsible categories
 - **Two counts per item:** *how many I need* vs *how many I have*, with a "need N" or "+N spare" tag on each item
+- **Three item types:**
+  - 🔢 *Counted*: you track how many you have
+  - ⏬ *Used up*: socks, underwear, shampoo. Each has a usage rate ("1 per day", "1 every 14 days"), and one **☀️ Day passed** tap lowers them all (with undo).
+  - 🔒 *Always here*: towel, flip-flops. No counter; they sit in a quiet collapsed section. Tap "Missing?" if one disappears and it moves to the main list and the packing list.
 - **Where it lives:** 🗄️ *stays at base* (closet), 🎒 *travels with me* (bag), or no fixed spot
 - **Pack tab:** a checklist that saves your progress
   - *Bring to base*: everything that's short at base. Ticking an item updates its count at base.
