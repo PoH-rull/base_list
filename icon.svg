@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b6cf5"/><stop offset="1" stop-color="#b49cff"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#g)"/>
+  <!-- duffel bag -->
+  <path d="M196 172v-22a30 30 0 0 1 30-30h60a30 30 0 0 1 30 30v22" fill="none" stroke="#fff" stroke-width="26" stroke-linecap="round"/>
+  <rect x="112" y="168" width="288" height="216" rx="44" fill="#fff"/>
+  <!-- check mark -->
+  <path d="M190 278l46 46 90-96" fill="none" stroke="#5b6cf5" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

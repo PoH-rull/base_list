@@ -1,525 +1,1129 @@
-const K_ITEMS='base-inv-v6', K_CATS='base-inv-cats-v6', K_LANG='base-inv-lang', K_PINNED='base-inv-pinned-v6';
-let items=[], cats=[], pinnedCats=[], filter='all', locFilter='', catFilter='', openPanel=null, editingId=null, sLoc='';
-let packTab='tobase', packDone=new Set(), packPrev=new Map();
+'use strict';
 
-// ── LOAD / SAVE ──────────────────────────────────────────────────────────────
-function load(){
-  cats  = JSON.parse(localStorage.getItem(K_CATS)||'[]');
-  const saved = localStorage.getItem(K_ITEMS);
-  if(saved){ items=JSON.parse(saved); }
-  else {
+// ── STORAGE ───────────────────────────────────────────────────────────────────
+// Item/category/pin/lang keys are unchanged from earlier versions so existing data loads as-is.
+const K = {
+  items: 'base-inv-v6', cats: 'base-inv-cats-v6', pinned: 'base-inv-pinned-v6', lang: 'base-inv-lang',
+  pack: 'base-inv-pack-v1', prefs: 'base-inv-prefs-v1', collapsed: 'base-inv-collapsed-v1', view: 'base-inv-view-v1',
+};
+
+const S = {
+  items: [], cats: [], pinned: [], collapsed: [],
+  pack: { done: [], prev: {} },          // prev: qty before an item was ticked in Pack, so unticking restores it
+  prefs: { theme: 'dark', sort: 'missing', lastExport: 0, hidePacked: false },
+  lang: 'he', view: 'inv',
+  filter: { status: 'all', loc: '', cat: '', q: '' },
+};
+
+function readJSON(key, fallback) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+  catch { return fallback; }
+}
+
+function normalizeItems(list) {
+  const seen = new Set();
+  let next = Date.now();
+  return (Array.isArray(list) ? list : []).filter(i => i && String(i.name || '').trim()).map(i => {
+    let id = Number(i.id);
+    if (!Number.isFinite(id) || seen.has(id)) id = next++;
+    seen.add(id);
+    const target = Math.max(1, parseInt(i.target, 10) || 1);
+    return {
+      id, name: String(i.name).trim(), target,
+      qty: Math.max(0, parseInt(i.qty, 10) || 0),
+      cat: String(i.cat || ''),
+      location: ['bag', 'closet'].includes(i.location) ? i.location : '',
+      note: String(i.note || ''),
+    };
+  });
+}
+
+function load() {
+  let raw = readJSON(K.items, null);
+  if (!raw) {
     // migrate older versions
-    for(const key of ['base-inv-v5','base-inventory-v4','base-inventory-v5']){
-      const old=localStorage.getItem(key);
-      if(old){ items=JSON.parse(old).map(i=>({...i,location:i.bag||''})); break; }
+    for (const key of ['base-inv-v5', 'base-inventory-v4', 'base-inventory-v5']) {
+      const old = readJSON(key, null);
+      if (old) { raw = old.map(i => ({ ...i, location: i.location || i.bag || '' })); break; }
     }
   }
-  // heal: add any category referenced by an item but missing from the cats list
-  items.forEach(it=>{ if(it.cat && !cats.includes(it.cat)) cats.push(it.cat); });
-  pinnedCats = JSON.parse(localStorage.getItem(K_PINNED)||'[]').filter(c=>cats.includes(c));
-}
-function save(){
-  localStorage.setItem(K_ITEMS,JSON.stringify(items));
-  localStorage.setItem(K_CATS,JSON.stringify(cats));
-  localStorage.setItem(K_PINNED,JSON.stringify(pinnedCats));
-}
-
-// ── SEARCH ───────────────────────────────────────────────────────────────────
-let searchOpen=false;
-function toggleSearch(){
-  searchOpen=!searchOpen;
-  document.getElementById('searchBar').classList.toggle('open',searchOpen);
-  document.getElementById('searchBtn').classList.toggle('active',searchOpen);
-  if(searchOpen) setTimeout(()=>document.getElementById('searchInput').focus(),260);
-  else { document.getElementById('searchInput').value=''; render(); }
+  S.items = normalizeItems(raw || []);
+  S.cats = readJSON(K.cats, []).filter(c => typeof c === 'string' && c);
+  healCats();
+  S.pinned = readJSON(K.pinned, []).filter(c => S.cats.includes(c));
+  S.collapsed = readJSON(K.collapsed, []);
+  S.pack = { done: [], prev: {}, ...readJSON(K.pack, {}) };
+  S.prefs = { ...S.prefs, ...readJSON(K.prefs, {}) };
+  S.lang = localStorage.getItem(K.lang) === 'en' ? 'en' : 'he';
+  S.view = ['inv', 'pack', 'settings'].includes(localStorage.getItem(K.view)) ? localStorage.getItem(K.view) : 'inv';
 }
 
-// ── FILTERS ──────────────────────────────────────────────────────────────────
-function setFilter(f){
-  filter=f; locFilter=''; catFilter='';
-  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
-  document.getElementById('chip'+f.charAt(0).toUpperCase()+f.slice(1)).classList.add('active');
-  render();
-}
-function setLocFilter(l){
-  locFilter = locFilter===l?'':l;
-  filter='all'; catFilter='';
-  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
-  if(locFilter) document.getElementById(l==='bag'?'chipBag':'chipCloset').classList.add('active');
-  else document.getElementById('chipAll').classList.add('active');
-  render();
+// any category referenced by an item but missing from the list gets added back
+function healCats() {
+  S.items.forEach(it => { if (it.cat && !S.cats.includes(it.cat)) S.cats.push(it.cat); });
 }
 
-// ── ADD LOCATION TOGGLE ───────────────────────────────────────────────────────
-function setSLoc(v){
-  sLoc=v;
-  ['sLoc0','sLoc1','sLoc2'].forEach(id=>{
-    const el=document.getElementById(id);
-    el.classList.remove('active','bag','clos');
+function save() {
+  try {
+    localStorage.setItem(K.items, JSON.stringify(S.items));
+    localStorage.setItem(K.cats, JSON.stringify(S.cats));
+    localStorage.setItem(K.pinned, JSON.stringify(S.pinned));
+    localStorage.setItem(K.collapsed, JSON.stringify(S.collapsed));
+    localStorage.setItem(K.pack, JSON.stringify(S.pack));
+    localStorage.setItem(K.prefs, JSON.stringify(S.prefs));
+  } catch {
+    toast(t('save_fail'));
+  }
+}
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+const $ = sel => document.querySelector(sel);
+const byId = id => S.items.find(i => i.id === id);
+const isFull = it => it.qty >= it.target;
+const need = it => Math.max(0, it.target - it.qty);
+const status = it => it.qty >= it.target ? 'ok' : it.qty === 0 ? 'zero' : 'low';
+const collator = () => new Intl.Collator(S.lang === 'he' ? 'he' : 'en', { numeric: true, sensitivity: 'base' });
+const sameName = (a, b) => a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function buzz(ms = 8) { try { navigator.vibrate && navigator.vibrate(ms); } catch {} }
+function newId() { return Math.max(Date.now(), ...S.items.map(i => i.id + 1)); }
+
+function stats() {
+  const total = S.items.length;
+  const full = S.items.filter(isFull).length;
+  return {
+    total, full, miss: total - full,
+    units: S.items.reduce((s, i) => s + need(i), 0),
+    bag: S.items.filter(i => i.location === 'bag').length,
+    closet: S.items.filter(i => i.location === 'closet').length,
+    pct: total ? Math.round(full / total * 100) : 0,
+  };
+}
+
+// Group a list by category: pinned first (in pin order), then alphabetical, uncategorised last.
+function groupByCat(list) {
+  const groups = new Map();
+  list.forEach(it => { const g = it.cat || ''; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(it); });
+  const col = collator();
+  const order = [...groups.keys()].sort((a, b) => {
+    if (!a) return 1; if (!b) return -1;
+    const pa = S.pinned.indexOf(a), pb = S.pinned.indexOf(b);
+    if (pa >= 0 && pb >= 0) return pa - pb;
+    if (pa >= 0) return -1; if (pb >= 0) return 1;
+    return col.compare(a, b);
   });
-  if(v===''){    const b=document.getElementById('sLoc0'); b.classList.add('active'); }
-  else if(v==='bag'){ const b=document.getElementById('sLoc1'); b.classList.add('active','bag'); }
-  else { const b=document.getElementById('sLoc2'); b.classList.add('active','clos'); }
+  return order.map(cat => [cat, groups.get(cat)]);
 }
 
-// ── CATEGORIES ───────────────────────────────────────────────────────────────
-function togglePin(i){
-  const c=cats[i]; if(!c) return;
-  const pi=pinnedCats.indexOf(c);
-  if(pi>=0) pinnedCats.splice(pi,1); else pinnedCats.push(c);
-  save(); refreshCatUI(); render();
-}
-function refreshCatUI(){
-  document.getElementById('catList').innerHTML = cats.map((c,i)=>`
-    <div class="tag-pill">
-      <button class="pin-btn${pinnedCats.includes(c)?' pinned':''}" onclick="togglePin(${i})" title="Pin to top">📌</button>
-      ${esc(c)}<button class="tag-del" onclick="delCat(${i})">✕</button>
-    </div>`).join('');
-  const wrap=document.getElementById('chipsWrap');
-  wrap.querySelectorAll('.cat-chip').forEach(e=>e.remove());
-  cats.forEach(c=>{
-    const el=document.createElement('div');
-    el.className='chip cat-chip'+(catFilter===c?' active':'');
-    el.textContent=c;
-    el.onclick=()=>{ catFilter=catFilter===c?'':c; locFilter=''; filter='all';
-      document.querySelectorAll('.chip').forEach(x=>x.classList.remove('active'));
-      if(catFilter) el.classList.add('active'); else document.getElementById('chipAll').classList.add('active');
-      render(); };
-    // insert before the loc chips
-    document.getElementById('chipBag').before(el);
-  });
-  const sc=document.getElementById('sCat');
-  if(sc){ const cur=sc.value; sc.innerHTML=cats.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join(''); if(cats.includes(cur)) sc.value=cur; }
-}
-function addCat(){
-  const inp=document.getElementById('newCat'); const v=inp.value.trim();
-  if(!v||cats.includes(v)) return;
-  cats.push(v); inp.value=''; save(); refreshCatUI();
-}
-async function delCat(i){
-  const c=cats[i]; if(!c) return;
-  const ok=await showConfirm(t().cat_del_confirm(c),'',lang==='he'?'מחק':'Delete');
-  if(!ok) return;
-  cats.splice(i,1);
-  pinnedCats=pinnedCats.filter(p=>p!==c);
-  items.forEach(it=>{ if(it.cat===c) it.cat=cats[0]||''; });
-  save(); refreshCatUI(); render();
+function ring(pct, size = 72, stroke = 8) {
+  const r = (size - stroke) / 2, c = 2 * Math.PI * r;
+  return `<svg class="ring${pct === 100 ? ' ring-done' : ''}" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">
+    <circle class="ring-bg" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-width="${stroke}"/>
+    <circle class="ring-fg" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-width="${stroke}"
+      stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${(c * (1 - pct / 100)).toFixed(2)}"
+      transform="rotate(-90 ${size / 2} ${size / 2})"/>
+  </svg>`;
 }
 
-// ── ADD SHEET ─────────────────────────────────────────────────────────────────
-function showAddSheet(){
-  refreshCatUI(); sLoc=''; setSLoc('');
-  document.getElementById('addSheet').style.display='flex';
-  setTimeout(()=>document.getElementById('sName').focus(),300);
-}
-function hideAddSheet(){ document.getElementById('addSheet').style.display='none'; }
-function submitAdd(){
-  const name=document.getElementById('sName').value.trim();
-  const qty=parseInt(document.getElementById('sQty').value)||1;
-  const cat=document.getElementById('sCat').value||'';
-  if(!name){ document.getElementById('sName').focus(); return; }
-  items.push({id:Date.now(),name,target:qty,qty:0,cat,location:sLoc});
-  document.getElementById('sName').value='';
-  document.getElementById('sQty').value='';
-  setSLoc('');
-  const msg=document.getElementById('addSuccess');
-  msg.textContent=(lang==='he'?'✓ נוסף: ':'✓ Added: ')+name;
-  setTimeout(()=>msg.textContent='',1800);
-  save(); render();
-  document.getElementById('sName').focus();
+function locBadge(loc) {
+  if (!loc) return '';
+  return `<span class="loc-badge ${loc}">${loc === 'bag' ? '🎒' : '🗄️'} ${t(loc === 'bag' ? 'loc_bag' : 'loc_closet')}</span>`;
 }
 
-// ── SETTINGS ─────────────────────────────────────────────────────────────────
-function showSettings(){ refreshCatUI(); document.getElementById('settingsSheet').style.display='flex'; }
-function hideSettings(){ document.getElementById('settingsSheet').style.display='none'; }
-
-async function resetAllQty(){
-  const ok=await showConfirm(t().reset_confirm,'');
-  if(!ok) return;
-  items.forEach(i=>i.qty=0);
-  save(); render(); hideSettings();
+// ── INVENTORY VIEW ────────────────────────────────────────────────────────────
+function renderTop() {
+  const st = stats();
+  $('#topSub').textContent = st.total ? t('sub', st.full, st.total) : t('sub_empty');
+  document.body.classList.toggle('is-empty', !st.total);
 }
 
-// ── PACK MODE ─────────────────────────────────────────────────────────────────
-function showPack(){
-  packDone.clear(); packPrev.clear(); packTab='tobase';
-  renderPack();
-  document.getElementById('packSheet').style.display='flex';
-}
-function hidePack(){ document.getElementById('packSheet').style.display='none'; }
-function setPackTab(tab){ packTab=tab; packDone.clear(); packPrev.clear(); renderPack(); }
-function renderPack(){
-  const s=t();
-  const sortFn=(a,b)=>(a.cat||'').localeCompare(b.cat||'','he')||a.name.localeCompare(b.name,'he');
-  const list=packTab==='tobase'
-    ? items.filter(i=>i.qty<i.target||packDone.has(i.id)).sort(sortFn)
-    : items.filter(i=>i.location==='bag'||packDone.has(i.id)).sort(sortFn);
-  document.getElementById('packTabBase').className='pack-tab'+(packTab==='tobase'?' active':'');
-  document.getElementById('packTabHome').className='pack-tab'+(packTab==='tobag'?' active':'');
-  const doneCount=list.filter(i=>packDone.has(i.id)).length;
-  const pct=list.length?Math.round(doneCount/list.length*100):100;
-  setText('packProgLabel',packTab==='tobase'?s.pack_prog_base:s.pack_prog_bag);
-  document.getElementById('packProgPct').textContent=pct+'%';
-  document.getElementById('packProgFill').style.width=pct+'%';
-  const el=document.getElementById('packList');
-  if(!list.length){
-    const hasBag=items.some(i=>i.location==='bag');
-    el.innerHTML=`<div class="pack-empty">${packTab==='tobase'?s.pack_done_base:(hasBag?s.pack_done_bag:s.pack_no_bag)}</div>`;
+function renderHero() {
+  const st = stats(), el = $('#hero');
+  if (!st.total) {
+    el.innerHTML = `<div class="hero hero-welcome">
+      <div class="hero-emoji">👋</div>
+      <h2>${t('welcome_t')}</h2>
+      <p>${t('welcome_d')}</p>
+      <ul class="howto">
+        <li><b>🗄️ ${t('loc_closet_long')}</b> — ${t('loc_closet_desc')}</li>
+        <li><b>🎒 ${t('loc_bag_long')}</b> — ${t('loc_bag_desc')}</li>
+        <li><b>🧳 ${t('tab_pack')}</b> — ${t('welcome_pack')}</li>
+      </ul>
+      <div class="hero-actions">
+        <button class="btn btn-primary" data-action="add">+ ${t('add_first')}</button>
+        <button class="btn btn-soft" data-action="starter">✨ ${t('starter')}</button>
+      </div>
+    </div>`;
     return;
   }
-  el.innerHTML=list.map(item=>{
-    const done=packDone.has(item.id);
-    if(packTab==='tobase'){
-      const miss=done?0:item.target-item.qty;
-      return `<div class="pack-item tobase${done?' done':''}" onclick="togglePackItem(${item.id})">
-        <div class="pack-check">${done?'✓':''}</div>
-        <div class="pack-info">
-          <div class="pack-name">${esc(item.name)}</div>
-          <div class="pack-sub">${esc(item.cat||'')}${locLabel(item.location,' · ')}</div>
-        </div>
-        ${done?'':`<span class="pack-badge need">${s.pack_need(miss)}</span>`}
-      </div>`;
-    } else {
-      const spare=item.qty>item.target?item.qty-item.target:0;
-      const miss=item.qty<item.target?item.target-item.qty:0;
-      return `<div class="pack-item tobag${done?' done':''}" onclick="togglePackItem(${item.id})">
-        <div class="pack-check">${done?'✓':''}</div>
-        <div class="pack-info">
-          <div class="pack-name">${esc(item.name)}</div>
-          <div class="pack-sub">${esc(item.cat||'')}${spare?` · <span style="color:#a78bfa">+${spare} עודף</span>`:''}</div>
-        </div>
-        ${!done&&miss?`<span class="pack-badge need">${s.pack_need(miss)}</span>`:''}
-      </div>`;
-    }
+  const done = st.miss === 0;
+  el.innerHTML = `<div class="hero ${done ? 'hero-done' : ''}">
+    <div class="hero-ring">${ring(st.pct)}<span class="hero-pct">${st.pct}%</span></div>
+    <div class="hero-body">
+      <div class="hero-title">${done ? t('hero_full_t') : t('hero_miss_t', st.miss)}</div>
+      <div class="hero-sub">${done ? t('hero_full_d') : t('hero_miss_d', st.units)}</div>
+      <div class="hero-meta">
+        <button class="mini-stat" data-action="loc" data-v="closet">🗄️ ${st.closet}</button>
+        <button class="mini-stat" data-action="loc" data-v="bag">🎒 ${st.bag}</button>
+        <span class="mini-stat plain">✓ ${st.full}/${st.total}</span>
+      </div>
+    </div>
+    ${done ? '' : `<button class="hero-cta" data-action="view" data-v="pack" aria-label="${esc(t('go_pack'))}">🧳<span>${t('go_pack')}</span></button>`}
+  </div>`;
+}
+
+function renderFilters() {
+  const f = S.filter, st = stats();
+  document.querySelectorAll('#statusSeg button').forEach(b => b.classList.toggle('active', b.dataset.v === f.status));
+  document.querySelectorAll('.chip-loc').forEach(b => b.classList.toggle('active', b.dataset.v === f.loc));
+  $('#cntMissing').textContent = st.miss ? st.miss : '';
+  $('.search-clear').hidden = !f.q;
+  $('#toolbar').hidden = !st.total;
+
+  const missByCat = {};
+  S.items.forEach(i => { if (!isFull(i)) missByCat[i.cat] = (missByCat[i.cat] || 0) + 1; });
+  const cats = groupByCat(S.items).map(([c]) => c).filter(Boolean);
+  $('#catChips').innerHTML = cats.length < 2 ? '' : cats.map(c => `
+    <button class="chip${f.cat === c ? ' active' : ''}" data-action="cat" data-v="${esc(c)}">
+      ${S.pinned.includes(c) ? '📌 ' : ''}${esc(c)}${missByCat[c] ? `<span class="chip-dot">${missByCat[c]}</span>` : ''}
+    </button>`).join('');
+}
+
+function filtered() {
+  const f = S.filter, q = f.q.trim().toLocaleLowerCase();
+  return S.items.filter(i =>
+    (f.status !== 'missing' || !isFull(i)) &&
+    (f.status !== 'full' || isFull(i)) &&
+    (!f.loc || i.location === f.loc) &&
+    (!f.cat || i.cat === f.cat) &&
+    (!q || i.name.toLocaleLowerCase().includes(q) || i.note.toLocaleLowerCase().includes(q)));
+}
+
+function itemHTML(it) {
+  const st = status(it), n = need(it);
+  const pct = Math.min(100, Math.round(it.qty / it.target * 100));
+  return `<div class="item s-${st}" data-id="${it.id}">
+    <button class="item-main" data-action="edit" data-id="${it.id}">
+      <span class="item-name">${esc(it.name)}</span>
+      <span class="item-meta">
+        ${n ? `<span class="need-pill">${t('need', n)}</span>` : ''}
+        ${it.qty > it.target ? `<span class="spare-pill">${t('spare', it.qty - it.target)}</span>` : ''}
+        ${locBadge(it.location)}
+        ${it.note ? `<span class="note">📝 ${esc(it.note)}</span>` : ''}
+      </span>
+    </button>
+    <div class="stepper">
+      <button class="step-btn" data-action="dec" data-id="${it.id}" aria-label="-1"${it.qty === 0 ? ' disabled' : ''}>−</button>
+      <button class="step-val" data-action="qty-input" data-id="${it.id}" aria-label="${esc(t('f_qty'))}"><b>${it.qty}</b><small>/${it.target}</small></button>
+      <button class="step-btn" data-action="inc" data-id="${it.id}" aria-label="+1">+</button>
+    </div>
+    <div class="item-bar"><i style="width:${pct}%"></i></div>
+  </div>`;
+}
+
+function groupHeadHTML(cat, list, collapsed) {
+  const full = list.filter(isFull).length, miss = list.length - full;
+  return `<button class="group-head${collapsed ? ' collapsed' : ''}" data-action="toggle-group" data-v="${esc(cat)}" aria-expanded="${!collapsed}">
+    <span class="chev" aria-hidden="true">▾</span>
+    <span class="group-name">${S.pinned.includes(cat) ? '📌 ' : ''}${esc(cat || t('no_cat'))}</span>
+    <span class="group-stat ${miss ? 'bad' : 'ok'}">${miss ? t('need_items', miss) : '✓'}</span>
+    <span class="group-count">${full}/${list.length}</span>
+  </button>`;
+}
+
+function renderList() {
+  const el = $('#list');
+  if (!S.items.length) { el.innerHTML = ''; return; }
+  const list = filtered();
+  if (!list.length) {
+    el.innerHTML = `<div class="empty"><div class="empty-ico">🔎</div><p>${t('empty_filter')}</p>
+      <button class="btn btn-soft" data-action="clear-filters">${t('clear_filters')}</button></div>`;
+    return;
+  }
+  const col = collator();
+  const searching = !!S.filter.q.trim();
+  el.innerHTML = groupByCat(list).map(([cat, arr]) => {
+    arr.sort((a, b) => {
+      if (S.prefs.sort === 'missing') { const d = Number(isFull(a)) - Number(isFull(b)); if (d) return d; }
+      return col.compare(a.name, b.name);
+    });
+    const collapsed = !searching && S.collapsed.includes(cat);
+    return `<section class="group">${groupHeadHTML(cat, arr, collapsed)}
+      <div class="group-body"${collapsed ? ' hidden' : ''}>${arr.map(itemHTML).join('')}</div></section>`;
   }).join('');
 }
-function togglePackItem(id){
-  const item=items.find(i=>i.id===id); if(!item) return;
-  if(packDone.has(id)){
-    if(packTab==='tobase'){ item.qty=packPrev.get(id)??item.qty; }
-    packDone.delete(id); packPrev.delete(id);
-  } else {
-    if(packTab==='tobase'){ packPrev.set(id,item.qty); item.qty=item.target; }
-    packDone.add(id);
+
+// Update a single item row in place (no re-sort, so rows don't jump under your thumb).
+function patchItem(id) {
+  const it = byId(id), el = document.querySelector(`.item[data-id="${id}"]`);
+  if (it && el) {
+    el.outerHTML = itemHTML(it);
+    const group = document.querySelector(`.item[data-id="${id}"]`).closest('.group');
+    const ids = [...group.querySelectorAll('.item')].map(e => Number(e.dataset.id));
+    const head = group.querySelector('.group-head');
+    head.outerHTML = groupHeadHTML(it.cat, ids.map(byId).filter(Boolean), false);
   }
-  if(packTab==='tobase'){ save(); updateStats(); }
-  renderPack();
+  renderTop(); renderHero(); renderFilters(); renderBadge();
 }
 
-// ── STEPPER ───────────────────────────────────────────────────────────────────
-function chQty(id,d){
-  const it=items.find(i=>i.id===id); if(!it) return;
-  it.qty=Math.max(0,it.qty+d);
-  save(); refreshItem(id); updateStats();
-}
-function startEdit(id){
-  if(editingId!==null) finishEdit(editingId);
-  editingId=id;
-  const el=document.getElementById('sn-'+id); if(!el) return;
-  el.classList.add('editing');
-  const inp=el.querySelector('input');
-  inp.value=items.find(i=>i.id===id)?.qty??0; inp.focus(); inp.select();
-}
-function finishEdit(id){
-  if(editingId!==id) return; editingId=null;
-  const it=items.find(i=>i.id===id); const el=document.getElementById('sn-'+id);
-  if(!it||!el) return;
-  const v=parseInt(el.querySelector('input').value);
-  if(!isNaN(v)&&v>=0) it.qty=v;
-  el.classList.remove('editing'); refreshItem(id); save(); updateStats();
-}
+function renderInv() { renderTop(); renderHero(); renderFilters(); renderList(); renderBadge(); }
 
-// ── EDIT PANEL ────────────────────────────────────────────────────────────────
-function togglePanel(id){
-  const p=document.getElementById('ep-'+id); if(!p) return;
-  if(openPanel===id){ p.classList.remove('open'); openPanel=null; return; }
-  if(openPanel!==null){ const pp=document.getElementById('ep-'+openPanel); if(pp) pp.classList.remove('open'); }
-  openPanel=id; p.classList.add('open');
-  const it=items.find(i=>i.id===id);
-  document.getElementById('epn-'+id).value=it.name;
-  document.getElementById('ept-'+id).value=it.target;
-  // sync category dropdown with current categories and item's saved value
-  const sel=document.getElementById('epc-'+id);
-  if(sel){ sel.innerHTML=cats.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join(''); sel.value=it.cat; }
-  // set location seg
-  ['','bag','closet'].forEach((v,idx)=>{
-    const b=document.getElementById(`epl-${id}-${idx}`);
-    if(b){ b.classList.toggle('active',it.location===v); b.classList.remove('bag','clos');
-      if(it.location===v){ if(v==='bag') b.classList.add('bag'); else if(v==='closet') b.classList.add('clos'); } }
+function flashItem(id) {
+  requestAnimationFrame(() => {
+    const el = document.querySelector(`.item[data-id="${id}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1300);
   });
 }
-function setEpLoc(id,v){
-  const it=items.find(i=>i.id===id); if(!it) return;
-  ['','bag','closet'].forEach((lv,idx)=>{
-    const b=document.getElementById(`epl-${id}-${idx}`);
-    if(b){ b.classList.remove('active','bag','clos');
-      if(lv===v){ b.classList.add('active'); if(v==='bag') b.classList.add('bag'); else if(v==='closet') b.classList.add('clos'); } }
+
+function changeQty(id, d) {
+  const it = byId(id); if (!it) return;
+  const v = Math.max(0, it.qty + d);
+  if (v === it.qty) return;
+  it.qty = v; buzz(); save(); patchItem(id);
+  if (d > 0 && it.qty === it.target) {
+    const el = document.querySelector(`.item[data-id="${id}"]`);
+    if (el) { el.classList.add('pop'); }
+  }
+}
+
+function startQtyEdit(btn, id) {
+  const it = byId(id); if (!it) return;
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.inputMode = 'numeric'; inp.min = '0'; inp.className = 'step-input'; inp.value = it.qty;
+  btn.replaceWith(inp); inp.focus(); inp.select();
+  let done = false;
+  const commit = ok => {
+    if (done) return; done = true;
+    const v = parseInt(inp.value, 10);
+    if (ok && !isNaN(v) && v >= 0) { it.qty = v; save(); }
+    patchItem(id);
+  };
+  inp.addEventListener('blur', () => commit(true));
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(true); }
+    if (e.key === 'Escape') commit(false);
   });
-  it.location=v; save();
-}
-function applyEdit(id){
-  const it=items.find(i=>i.id===id); if(!it) return;
-  const name=document.getElementById('epn-'+id).value.trim();
-  const target=parseInt(document.getElementById('ept-'+id).value);
-  const cat=document.getElementById('epc-'+id).value;
-  if(name) it.name=name;
-  if(!isNaN(target)&&target>=1){ it.target=target; it.qty=Math.min(it.qty,it.target); }
-  it.cat=cat;
-  const p=document.getElementById('ep-'+id); if(p) p.classList.remove('open'); openPanel=null;
-  save(); render();
-}
-async function delItem(id){
-  const it=items.find(i=>i.id===id);
-  const ok=await showConfirm(t().del_confirm,it?esc(it.name):'');
-  if(!ok) return; items=items.filter(i=>i.id!==id); save(); render();
 }
 
-// ── STATS ─────────────────────────────────────────────────────────────────────
-function updateStats(){
-  const total=items.length, full=items.filter(i=>i.qty>=i.target).length, miss=total-full;
-  const pct=total?Math.round(full/total*100):0;
-  document.getElementById('sTotal').textContent=total;
-  document.getElementById('sFull').textContent=full;
-  document.getElementById('sMiss').textContent=miss;
-  document.getElementById('sPct').textContent=pct+'%';
-  const bar=document.getElementById('sBar'); bar.style.width=pct+'%';
-  bar.classList.toggle('done',pct===100);
-  document.getElementById('topbarSub').textContent=total?t().sub_full(full,total):t().sub_empty;
+// ── PACK VIEW ─────────────────────────────────────────────────────────────────
+// "Bring" = not in the bag and short at base (or already ticked this trip).
+// "Bag"   = everything tagged 🎒 — a checklist you run every trip.
+function packData() {
+  const done = new Set(S.pack.done.filter(id => byId(id)));
+  const bring = S.items.filter(i => i.location !== 'bag' && (!isFull(i) || done.has(i.id)));
+  const bag = S.items.filter(i => i.location === 'bag');
+  const all = [...bring, ...bag];
+  return { done, bring, bag, total: all.length, packed: all.filter(i => done.has(i.id)).length };
 }
 
-// ── REFRESH SINGLE ────────────────────────────────────────────────────────────
-function qc(it){ return it.qty===0?'zero':it.qty<it.target?'low':'ok'; }
-function refreshItem(id){
-  const it=items.find(i=>i.id===id); if(!it) return;
-  const el=document.getElementById('item-'+id); if(!el) return;
-  el.className='item '+(it.qty>=it.target?'full':'missing');
-  const fb=document.getElementById('fb-'+id);
-  if(fb){ fb.querySelector('.frac-txt').textContent=it.qty+'/'+it.target; fb.className='frac '+qc(it); }
-  const sn=document.getElementById('sn-'+id);
-  if(sn){ sn.querySelector('span').textContent=it.qty; sn.className='step-num '+qc(it); }
+function renderBadge() {
+  const p = packData(), left = p.total - p.packed, b = $('#packBadge');
+  b.hidden = !left; b.textContent = left;
 }
 
-// ── RENDER ────────────────────────────────────────────────────────────────────
-function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function locLabel(loc,prefix=''){
-  if(loc==='bag')    return prefix+(lang==='he'?'🎒 תיק':'🎒 Bag');
-  if(loc==='closet') return prefix+(lang==='he'?'🗄️ ארון':'🗄️ Closet');
-  return '';
+function packItemHTML(it, done, kind) {
+  const n = done ? 0 : need(it);
+  const pill = kind === 'bring'
+    ? (n ? `<span class="pill pill-need">${t('bring_n', n)}</span>` : '')
+    : (n ? `<span class="pill pill-need">${t('need', n)}</span>` : it.target > 1 ? `<span class="pill">×${it.target}</span>` : '');
+  const sub = it.note ? esc(it.note) : '';  // category is already the section header
+  return `<button class="pack-item${done ? ' done' : ''} k-${kind}" data-action="pack-toggle" data-id="${it.id}" aria-pressed="${done}">
+    <span class="check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+    <span class="pi-main"><span class="pi-name">${esc(it.name)}</span>${sub ? `<span class="pi-sub">${sub}</span>` : ''}</span>
+    ${pill}
+  </button>`;
 }
 
-function render(){
-  updateStats();
-  const q=document.getElementById('searchInput')?.value.toLowerCase()||'';
-  const list=document.getElementById('itemList');
-  let filtered=[...items];
-  if(filter==='full')    filtered=filtered.filter(i=>i.qty>=i.target);
-  if(filter==='missing') filtered=filtered.filter(i=>i.qty<i.target);
-  if(locFilter)          filtered=filtered.filter(i=>i.location===locFilter);
-  if(catFilter)          filtered=filtered.filter(i=>i.cat===catFilter);
-  if(q)                  filtered=filtered.filter(i=>i.name.toLowerCase().includes(q));
+function packSection(kind, list, done) {
+  const col = collator();
+  const shown = S.prefs.hidePacked ? list.filter(i => !done.has(i.id)) : list;
+  const packed = list.filter(i => done.has(i.id)).length;
+  const head = `<div class="pack-sec-head">
+    <div><h3>${kind === 'bring' ? '📦 ' + t('pack_bring') : '🎒 ' + t('pack_bag')}</h3>
+    <p>${kind === 'bring' ? t('pack_bring_d') : t('pack_bag_d')}</p></div>
+    ${list.length ? `<span class="pack-sec-count">${packed}/${list.length}</span>` : ''}
+  </div>`;
+  if (!list.length) {
+    return `<section class="pack-sec">${head}<div class="pack-empty">${kind === 'bring' ? t('pack_empty_bring') : t('pack_empty_bag')}</div></section>`;
+  }
+  if (!shown.length) {
+    return `<section class="pack-sec">${head}<div class="pack-empty">✓ ${t('pack_sec_done')}</div></section>`;
+  }
+  const sorted = [...shown].sort((a, b) => col.compare(a.name, b.name));
+  const body = groupByCat(sorted).map(([cat, arr]) =>
+    `<div class="pack-cat">${esc(cat || t('no_cat'))}</div>` + arr.map(i => packItemHTML(i, done.has(i.id), kind)).join('')
+  ).join('');
+  return `<section class="pack-sec">${head}${body}</section>`;
+}
 
-  filtered.sort((a,b)=>{
-    const af=a.qty>=a.target,bf=b.qty>=b.target;
-    if(!af&&bf) return -1; if(af&&!bf) return 1;
-    const cc=(a.cat||'').localeCompare(b.cat||'','he');
-    return cc!==0?cc:a.name.localeCompare(b.name,'he');
+function renderPack() {
+  const p = packData();
+  const pct = p.total ? Math.round(p.packed / p.total * 100) : 100;
+  const ready = p.total > 0 && p.packed === p.total;
+  $('#packHero').innerHTML = `<div class="hero pack-hero${ready ? ' hero-done' : ''}">
+    <div class="hero-ring">${ring(pct)}<span class="hero-pct">${p.packed}/${p.total}</span></div>
+    <div class="hero-body">
+      <div class="hero-title">${!p.total ? t('pack_nothing_t') : ready ? t('pack_ready_t') : t('pack_left', p.total - p.packed)}</div>
+      <div class="hero-sub">${!p.total ? t('pack_nothing_d') : ready ? t('pack_ready_d') : t('pack_hint')}</div>
+    </div>
+  </div>
+  <div class="pack-tools">
+    <button class="btn btn-soft btn-sm" data-action="pack-share">📤 ${t('pack_share')}</button>
+    <button class="btn btn-soft btn-sm" data-action="pack-reset"${p.packed ? '' : ' disabled'}>↺ ${t('pack_reset')}</button>
+    <label class="switch"><input type="checkbox" id="hidePacked"${S.prefs.hidePacked ? ' checked' : ''}><span class="switch-ui"></span>${t('pack_hide')}</label>
+  </div>`;
+  $('#packList').innerHTML = S.items.length
+    ? packSection('bring', p.bring, p.done) + packSection('bag', p.bag, p.done)
+    : `<div class="empty"><div class="empty-ico">🧳</div><p>${t('pack_no_items')}</p>
+       <button class="btn btn-primary" data-action="add">+ ${t('add_first')}</button></div>`;
+  renderBadge();
+}
+
+function packToggle(id) {
+  const it = byId(id); if (!it) return;
+  const done = new Set(S.pack.done);
+  if (done.has(id)) {
+    done.delete(id);
+    if (id in S.pack.prev) { it.qty = S.pack.prev[id]; delete S.pack.prev[id]; }
+  } else {
+    done.add(id);
+    // ticking something that's short means you now have the full amount
+    if (it.qty < it.target) { S.pack.prev[id] = it.qty; it.qty = it.target; }
+    buzz(12);
+  }
+  S.pack.done = [...done];
+  save();
+  const before = packData();
+  renderPack(); renderTop();
+  if (before.total && before.packed === before.total) { buzz([30, 40, 30]); }
+}
+
+function packReset() {
+  const snap = JSON.parse(JSON.stringify(S.pack));
+  S.pack = { done: [], prev: {} };
+  save(); renderPack();
+  toast(t('pack_reset_done'), () => { S.pack = snap; save(); renderPack(); });
+}
+
+function listText(kind) {
+  const lines = [];
+  const date = new Date().toLocaleDateString(S.lang === 'he' ? 'he-IL' : 'en-GB', { day: 'numeric', month: 'numeric' });
+  if (kind === 'pack') {
+    const p = packData();
+    lines.push(t('share_head', date));
+    const sec = (title, list, kind2) => {
+      const left = list.filter(i => !p.done.has(i.id));
+      if (!left.length) return;
+      lines.push('', title);
+      left.forEach(i => {
+        const n = kind2 === 'bring' ? need(i) : (need(i) || (i.target > 1 ? i.target : 0));
+        lines.push(`☐ ${i.name}${n ? ` ×${n}` : ''}${i.note ? ` (${i.note})` : ''}`);
+      });
+    };
+    sec('📦 ' + t('pack_bring'), p.bring, 'bring');
+    sec('🎒 ' + t('pack_bag'), p.bag, 'bag');
+    if (lines.length === 1) lines.push('', t('pack_ready_t'));
+  } else {
+    lines.push(`🎖️ ${t('title')} — ${date}`);
+    groupByCat(S.items).forEach(([cat, arr]) => {
+      lines.push('', `▸ ${cat || t('no_cat')}`);
+      arr.forEach(i => lines.push(`${isFull(i) ? '✓' : '✗'} ${i.name} ${i.qty}/${i.target}${i.location ? ' ' + (i.location === 'bag' ? '🎒' : '🗄️') : ''}`));
+    });
+  }
+  return lines.join('\n');
+}
+
+async function shareText(text) {
+  if (navigator.share) {
+    try { await navigator.share({ text }); return; }
+    catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(text); toast(t('copied')); }
+  catch { toast(t('copy_fail')); }
+}
+
+// ── SETTINGS VIEW ─────────────────────────────────────────────────────────────
+function segHTML(action, current, opts) {
+  return `<div class="seg">${opts.map(([v, label]) =>
+    `<button data-action="${action}" data-v="${v}" class="${v === current ? 'active' : ''}">${label}</button>`).join('')}</div>`;
+}
+
+function renderSettings() {
+  const counts = {};
+  S.items.forEach(i => { counts[i.cat] = (counts[i.cat] || 0) + 1; });
+  const col = collator();
+  const cats = [...S.cats].sort((a, b) => {
+    const pa = S.pinned.indexOf(a), pb = S.pinned.indexOf(b);
+    if (pa >= 0 && pb >= 0) return pa - pb;
+    if (pa >= 0) return -1; if (pb >= 0) return 1;
+    return col.compare(a, b);
   });
+  const last = S.prefs.lastExport;
+  const stale = !last || Date.now() - last > 30 * 864e5;
+  const backup = last
+    ? t('backup_last', new Date(last).toLocaleDateString(S.lang === 'he' ? 'he-IL' : 'en-GB'))
+    : t('backup_never');
 
-  if(!filtered.length){
-    list.innerHTML=items.length===0
-      ?`<div class="empty"><div class="empty-icon">📦</div>${t().empty_list}<br><small>${t().empty_hint}</small></div>`
-      :`<div class="empty"><div class="empty-icon">✅</div>${t().empty_filter}</div>`;
+  $('#view-settings').innerHTML = `
+  <div class="card">
+    <h3 class="card-title">${t('set_display')}</h3>
+    <div class="set-row"><span>${t('set_lang')}</span>${segHTML('set-lang', S.lang, [['he', 'עברית'], ['en', 'English']])}</div>
+    <div class="set-row"><span>${t('set_theme')}</span>${segHTML('set-theme', S.prefs.theme, [['dark', '🌙 ' + t('th_dark')], ['light', '☀️ ' + t('th_light')], ['auto', t('th_auto')]])}</div>
+    <div class="set-row"><span>${t('set_sort')}</span>${segHTML('set-sort', S.prefs.sort, [['missing', t('sort_missing')], ['az', t('sort_az')]])}</div>
+  </div>
+
+  <div class="card">
+    <h3 class="card-title">${t('set_cats')}</h3>
+    <form class="inline-form" data-form="add-cat">
+      <input class="input" id="newCat" autocomplete="off" placeholder="${esc(t('cat_ph'))}">
+      <button class="btn btn-soft" type="submit">${t('add')}</button>
+    </form>
+    <div class="cat-list">
+      ${cats.length ? cats.map(c => `
+        <div class="cat-row" data-cat="${esc(c)}">
+          <button class="pin${S.pinned.includes(c) ? ' on' : ''}" data-action="cat-pin" data-v="${esc(c)}" aria-label="${esc(t('pin'))}" title="${esc(t('pin'))}">📌</button>
+          <button class="cat-name" data-action="cat-rename" data-v="${esc(c)}" title="${esc(t('rename'))}">${esc(c)} <span class="pencil">✎</span></button>
+          <span class="cat-count">${t('n_items', counts[c] || 0)}</span>
+          <button class="icon-btn icon-btn-sm danger" data-action="cat-del" data-v="${esc(c)}" aria-label="${esc(t('delete'))}">🗑</button>
+        </div>`).join('') : `<p class="muted">${t('no_cats')}</p>`}
+    </div>
+    <p class="hint">${t('cats_hint')}</p>
+  </div>
+
+  <div class="card">
+    <h3 class="card-title">${t('set_data')}</h3>
+    <div class="backup-note${stale && S.items.length ? ' warn' : ''}">${stale && S.items.length ? '⚠️ ' : '💾 '}${backup}</div>
+    <div class="btn-grid">
+      <button class="btn btn-soft" data-action="export">📤 ${t('export')}</button>
+      <button class="btn btn-soft" data-action="import">📥 ${t('import')}</button>
+      <button class="btn btn-soft" data-action="copy-text">📋 ${t('copy_text')}</button>
+      <button class="btn btn-soft" data-action="starter">✨ ${t('starter')}</button>
+    </div>
+  </div>
+
+  <div class="card card-danger">
+    <h3 class="card-title">${t('set_danger')}</h3>
+    <div class="btn-grid">
+      <button class="btn btn-danger-ghost" data-action="reset-qty">🔄 ${t('reset_qty')}</button>
+      <button class="btn btn-danger-ghost" data-action="wipe">🗑 ${t('wipe')}</button>
+    </div>
+  </div>
+  <p class="about">${t('about')}</p>`;
+}
+
+function renameCat(btn, oldName) {
+  const inp = document.createElement('input');
+  inp.className = 'input input-sm'; inp.value = oldName;
+  btn.replaceWith(inp); inp.focus(); inp.select();
+  let done = false;
+  const commit = ok => {
+    if (done) return; done = true;
+    const v = inp.value.trim();
+    if (ok && v && v !== oldName) {
+      if (S.cats.includes(v)) { toast(t('cat_exists')); }
+      else {
+        const swap = arr => arr.map(c => c === oldName ? v : c);
+        S.cats = swap(S.cats); S.pinned = swap(S.pinned); S.collapsed = swap(S.collapsed);
+        S.items.forEach(i => { if (i.cat === oldName) i.cat = v; });
+        if (S.filter.cat === oldName) S.filter.cat = v;
+        save();
+      }
+    }
+    renderSettings();
+  };
+  inp.addEventListener('blur', () => commit(true));
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(true); }
+    if (e.key === 'Escape') commit(false);
+  });
+}
+
+async function deleteCat(c) {
+  const n = S.items.filter(i => i.cat === c).length;
+  const ok = await confirmDialog(t('cat_del_c', c), n ? t('cat_del_s', n) : '', t('delete'));
+  if (!ok) return;
+  S.cats = S.cats.filter(x => x !== c);
+  S.pinned = S.pinned.filter(x => x !== c);
+  S.collapsed = S.collapsed.filter(x => x !== c);
+  S.items.forEach(i => { if (i.cat === c) i.cat = ''; });
+  if (S.filter.cat === c) S.filter.cat = '';
+  save(); renderSettings();
+}
+
+// ── STARTER LIST ──────────────────────────────────────────────────────────────
+const STARTER = [
+  // [he name, en name, he cat, en cat, target, location]
+  ['מדים', 'Uniform set', 'ביגוד', 'Clothing', 3, 'closet'],
+  ['חולצה לבנה', 'T-shirt', 'ביגוד', 'Clothing', 5, 'closet'],
+  ['גרביים', 'Socks', 'ביגוד', 'Clothing', 7, 'closet'],
+  ['תחתונים', 'Underwear', 'ביגוד', 'Clothing', 7, 'closet'],
+  ['פליז', 'Fleece', 'ביגוד', 'Clothing', 1, 'closet'],
+  ['מכנסי ספורט', 'Sweatpants', 'ביגוד', 'Clothing', 1, 'closet'],
+  ['מגבת', 'Towel', 'היגיינה', 'Hygiene', 2, 'closet'],
+  ['כפכפים', 'Flip-flops', 'היגיינה', 'Hygiene', 1, 'closet'],
+  ['שמפו', 'Shampoo', 'היגיינה', 'Hygiene', 1, 'closet'],
+  ['סבון', 'Soap', 'היגיינה', 'Hygiene', 1, 'closet'],
+  ['מברשת שיניים', 'Toothbrush', 'היגיינה', 'Hygiene', 1, 'closet'],
+  ['משחת שיניים', 'Toothpaste', 'היגיינה', 'Hygiene', 1, 'closet'],
+  ['דאודורנט', 'Deodorant', 'היגיינה', 'Hygiene', 1, 'closet'],
+  ['מטען לטלפון', 'Phone charger', 'אלקטרוניקה', 'Electronics', 1, 'bag'],
+  ['סוללה ניידת', 'Power bank', 'אלקטרוניקה', 'Electronics', 1, 'bag'],
+  ['אוזניות', 'Headphones', 'אלקטרוניקה', 'Electronics', 1, 'bag'],
+  ['חוגר', 'Military ID', 'מסמכים', 'Documents', 1, 'bag'],
+  ['ארנק', 'Wallet', 'מסמכים', 'Documents', 1, 'bag'],
+  ['מפתחות', 'Keys', 'מסמכים', 'Documents', 1, 'bag'],
+];
+
+function addStarter() {
+  const he = S.lang === 'he';
+  let added = 0, id = newId();
+  STARTER.forEach(([hn, en, hc, ec, target, location]) => {
+    const name = he ? hn : en, cat = he ? hc : ec;
+    if (S.items.some(i => sameName(i.name, name))) return;
+    // bag items are things you own and carry; base items start empty so you count them
+    S.items.push({ id: id++, name, target, qty: location === 'bag' ? target : 0, cat, location, note: '' });
+    if (!S.cats.includes(cat)) S.cats.push(cat);
+    added++;
+  });
+  save(); renderAll();
+  toast(added ? t('starter_added', added) : t('starter_none'));
+}
+
+// ── ITEM SHEET ────────────────────────────────────────────────────────────────
+let form = null;   // { mode: 'add'|'edit', id, cat, loc }
+const last = { cat: null, loc: '' };
+
+function openItemSheet(id) {
+  fillForm(id);
+  openOverlay('itemSheet');
+  if (form.mode === 'add') setTimeout(() => $('#fName').focus(), 260);
+}
+
+function fillForm(id) {
+  const it = id != null ? byId(id) : null;
+  const defCat = S.filter.cat || (last.cat !== null && (last.cat === '' || S.cats.includes(last.cat)) ? last.cat : (S.cats[0] || ''));
+  form = {
+    mode: it ? 'edit' : 'add', id: it ? it.id : null,
+    cat: it ? it.cat : defCat,
+    loc: it ? it.location : (S.filter.loc || last.loc || ''),
+  };
+  $('#isTitle').textContent = it ? t('sh_edit') : t('sh_add');
+  $('#fName').value = it ? it.name : '';
+  $('#fTarget').value = it ? it.target : 1;
+  $('#fQty').value = it ? it.qty : 0;
+  $('#fNote').value = it ? it.note : '';
+  $('#fNewCatRow').hidden = true; $('#fNewCat').value = '';
+  $('#dupHint').hidden = true;
+  $('#fName').classList.remove('invalid');
+  renderFormCats(); renderFormLoc(); renderQtyHint();
+  $('#sheetActions').innerHTML = it
+    ? `<button class="btn btn-danger-ghost" data-action="f-delete">🗑 ${t('delete')}</button>
+       <button class="btn btn-primary grow" data-action="f-save">${t('save')}</button>`
+    : `<button class="btn btn-soft" data-action="f-save" data-more="1">${t('add_more')}</button>
+       <button class="btn btn-primary grow" data-action="f-save">${t('add')}</button>`;
+}
+
+function renderFormCats() {
+  const opts = [...S.cats, ''];
+  $('#fCats').innerHTML = opts.map(c =>
+    `<button class="pick${form.cat === c ? ' active' : ''}" data-action="f-cat" data-v="${esc(c)}">${esc(c || t('no_cat'))}</button>`
+  ).join('') + `<button class="pick pick-new" data-action="f-newcat">+ ${t('f_new_cat')}</button>`;
+}
+
+function renderFormLoc() {
+  const opts = [
+    ['closet', '🗄️', t('loc_closet_long'), t('loc_closet_desc')],
+    ['bag', '🎒', t('loc_bag_long'), t('loc_bag_desc')],
+    ['', '—', t('loc_none'), t('loc_none_desc')],
+  ];
+  $('#fLoc').innerHTML = opts.map(([v, ico, title, desc]) =>
+    `<button class="loc-opt ${v || 'none'}${form.loc === v ? ' active' : ''}" data-action="f-loc" data-v="${v}" aria-pressed="${form.loc === v}">
+      <span class="loc-ico">${ico}</span><span class="loc-title">${title}</span><span class="loc-desc">${desc}</span>
+    </button>`).join('');
+}
+
+function formNums() {
+  return {
+    target: Math.max(1, parseInt($('#fTarget').value, 10) || 1),
+    qty: Math.max(0, parseInt($('#fQty').value, 10) || 0),
+  };
+}
+
+function renderQtyHint() {
+  const { target, qty } = formNums(), n = target - qty;
+  const el = $('#qtyHint');
+  el.className = 'qty-hint ' + (n > 0 ? 'bad' : 'ok');
+  el.innerHTML = n > 0
+    ? `${t('hint_need', n)} <button class="link" data-action="f-fill">✓ ${t('f_fill')}</button>`
+    : n < 0 ? `✓ ${t('hint_spare', -n)}` : `✓ ${t('hint_full')}`;
+}
+
+function checkDup() {
+  const name = $('#fName').value.trim(), el = $('#dupHint');
+  const dup = name && S.items.find(i => sameName(i.name, name) && i.id !== form.id);
+  el.hidden = !dup;
+  if (dup) {
+    el.innerHTML = `⚠️ ${t('dup', esc(dup.name))}` +
+      (form.mode === 'add' ? ` <button class="link" data-action="dup-edit" data-id="${dup.id}">${t('dup_edit')}</button>` : '');
+  }
+}
+
+function submitForm(more) {
+  const nameEl = $('#fName'), name = nameEl.value.trim();
+  if (!name) {
+    nameEl.classList.remove('invalid'); void nameEl.offsetWidth; nameEl.classList.add('invalid');
+    nameEl.focus(); return;
+  }
+  const { target, qty } = formNums();
+  const note = $('#fNote').value.trim();
+  last.cat = form.cat; last.loc = form.loc;
+  if (form.mode === 'edit') {
+    const it = byId(form.id); if (!it) return;
+    Object.assign(it, { name, target, qty, cat: form.cat, location: form.loc, note });
+    save(); closeOverlay('itemSheet'); renderAll(); flashItem(it.id);
     return;
   }
-
-  const groups={};
-  filtered.forEach(it=>{ const g=it.cat||'—'; (groups[g]=groups[g]||[]).push(it); });
-  const catOrder=Object.keys(groups).sort((a,b)=>{
-    const ap=pinnedCats.includes(a),bp=pinnedCats.includes(b);
-    if(ap&&!bp) return -1; if(!ap&&bp) return 1;
-    return a.localeCompare(b,'he');
-  });
-  let html='';
-  for(const cat of catOrder){
-    const gItems=groups[cat];
-    const gMiss=gItems.filter(i=>i.qty<i.target).length;
-    const pinned=pinnedCats.includes(cat);
-    html+=`<div class="cat-group"><div class="cat-label">${pinned?'<span class="cat-pin">📌</span>':''}${esc(cat)}<span class="cat-status ${gMiss?'bad':'ok'}">${gMiss?gMiss+' '+t().stat_miss:'✓ '+t().chip_full}</span></div>`;
-    gItems.forEach(it=>{
-      const cls=qc(it), isOpen=openPanel===it.id;
-      const locBadge=it.location?`<span class="loc-badge ${it.location}">${locLabel(it.location)}</span>`:'';
-      html+=`<div class="item ${it.qty>=it.target?'full':'missing'}" id="item-${it.id}">
-        <div class="item-row">
-          <div class="item-info">
-            <div class="item-name">${esc(it.name)}</div>
-            <div class="item-meta">${esc(it.cat||'')}${locBadge}</div>
-          </div>
-          <button class="frac ${cls}" id="fb-${it.id}" onclick="togglePanel(${it.id})">
-            <span class="frac-txt">${it.qty}/${it.target}</span><span class="edit-hint">✎</span>
-          </button>
-          <div class="stepper">
-            <button class="step-btn minus" onclick="chQty(${it.id},-1)">−</button>
-            <div class="step-num ${cls}" id="sn-${it.id}" onclick="startEdit(${it.id})">
-              <span>${it.qty}</span>
-              <input type="number" min="0" onclick="event.stopPropagation()"
-                onblur="finishEdit(${it.id})"
-                onkeydown="if(event.key==='Enter'||event.key==='Tab'){event.preventDefault();finishEdit(${it.id});}if(event.key==='Escape'){editingId=null;document.getElementById('sn-${it.id}').classList.remove('editing');}">
-            </div>
-            <button class="step-btn plus" onclick="chQty(${it.id},1)">+</button>
-          </div>
-        </div>
-        <div class="edit-panel ${isOpen?'open':''}" id="ep-${it.id}">
-          <div class="edit-panel-inner">
-            <div class="ep-row">
-              <span class="ep-label">${t().ep_name}</span>
-              <input class="ep-input" id="epn-${it.id}" type="text" value="${esc(it.name)}" onkeydown="if(event.key==='Enter')applyEdit(${it.id})">
-              <span class="ep-label">${t().ep_target}</span>
-              <input class="ep-input ep-num" id="ept-${it.id}" type="number" value="${it.target}" min="1" onkeydown="if(event.key==='Enter')applyEdit(${it.id})">
-            </div>
-            <div class="ep-row">
-              <span class="ep-label">${t().ep_cat}</span>
-              <select class="ep-select" id="epc-${it.id}">${cats.map(c=>`<option value="${esc(c)}"${it.cat===c?' selected':''}>${esc(c)}</option>`).join('')}</select>
-            </div>
-            <div class="ep-row">
-              <span class="ep-label">${t().ep_loc}</span>
-              <div class="seg">
-                <button class="seg-btn ${it.location===''?'active':''}"        id="epl-${it.id}-0" onclick="setEpLoc(${it.id},'')">—</button>
-                <button class="seg-btn ${it.location==='bag'?'active bag':''}" id="epl-${it.id}-1" onclick="setEpLoc(${it.id},'bag')">🎒 ${lang==='he'?'תיק':'Bag'}</button>
-                <button class="seg-btn ${it.location==='closet'?'active clos':''}" id="epl-${it.id}-2" onclick="setEpLoc(${it.id},'closet')">🗄️ ${lang==='he'?'ארון':'Closet'}</button>
-              </div>
-            </div>
-            <div class="ep-row">
-              <button class="ep-save" onclick="applyEdit(${it.id})">${t().ep_save}</button>
-              <button class="ep-delete" onclick="delItem(${it.id})">${t().ep_del}</button>
-            </div>
-          </div>
-        </div>
-      </div>`;
-    });
-    html+='</div>';
+  const it = { id: newId(), name, target, qty, cat: form.cat, location: form.loc, note };
+  S.items.push(it);
+  save(); renderAll();
+  if (more) {
+    nameEl.value = ''; $('#fNote').value = ''; $('#fTarget').value = 1; $('#fQty').value = 0;
+    $('#dupHint').hidden = true; renderQtyHint();
+    nameEl.focus();
+    toast(t('added', name));
+  } else {
+    closeOverlay('itemSheet');
+    if (S.view !== 'inv') setView('inv');
+    flashItem(it.id);
+    toast(t('added', name));
   }
-  list.innerHTML=html;
 }
 
-// ── CONFIRM ───────────────────────────────────────────────────────────────────
-let _cb=null;
-function showConfirm(msg,sub,okLabel){
-  return new Promise(resolve=>{
-    _cb=resolve;
-    document.getElementById('confirmMsg').textContent=msg;
-    document.getElementById('confirmSub').textContent=sub||'';
-    document.getElementById('confirmOk').textContent=okLabel||(lang==='he'?'אשר':'Confirm');
-    document.getElementById('confirmCancel').textContent=lang==='he'?'ביטול':'Cancel';
-    document.getElementById('confirmDialog').style.display='flex';
+function deleteItem(id) {
+  const idx = S.items.findIndex(i => i.id === id); if (idx < 0) return;
+  const [it] = S.items.splice(idx, 1);
+  const packSnap = JSON.parse(JSON.stringify(S.pack));
+  S.pack.done = S.pack.done.filter(x => x !== id); delete S.pack.prev[id];
+  save(); closeOverlay('itemSheet'); renderAll();
+  toast(t('deleted', it.name), () => {
+    S.items.splice(idx, 0, it); S.pack = packSnap; healCats(); save(); renderAll(); flashItem(it.id);
   });
 }
-function confirmResolve(v){ document.getElementById('confirmDialog').style.display='none'; if(_cb){_cb(v);_cb=null;} }
 
-// ── I18N ──────────────────────────────────────────────────────────────────────
-const STRINGS={
-  he:{
-    title:'ציוד בבסיס',sub_empty:'רשימה ריקה',sub_full:(f,tt)=>`${f}/${tt} מלא`,
-    stat_items:'פריטים',stat_full:'מלא',stat_miss:'חסר',prog_label:'כמה מהרשימה מלא',
-    chip_all:'הכל',chip_miss:'חסר',chip_full:'מלא',chip_bag:'🎒 תיק',chip_closet:'🗄️ ארון',
-    fab:'+ הוסף פריט',sheet_title:'הוספת פריט',sh_name_ph:'שם הפריט...',sh_qty_ph:'יעד',sh_add:'הוסף לרשימה',sh_done:'סגור',
-    search_ph:'חפש פריט...',
-    pack_title:'📦 מצב אריזה',pack_tab_base:'📦 לבסיס',pack_tab_bag:'🎒 תיק',
-    pack_prog_base:'ארזת:',pack_prog_bag:'בתיק:',
-    pack_need:n=>`חסר ${n}`,pack_spare:n=>`עודף ${n}`,
-    pack_done_base:'🎉 הכל ארוז! יאללה לבסיס.',pack_done_bag:'✓ הכל בתיק! מוכן לצאת.',pack_no_bag:'🎒 אין פריטי תיק.\nתייג פריטים עם 🎒 בלוח העריכה.',
-    settings_title:'הגדרות',sec_cats:'קטגוריות',cat_ph:'קטגוריה חדשה...',add_tag:'הוסף',close:'סגור',
-    sec_data:'נתונים',export_label:'ייצא רשימה',import_label:'ייבא רשימה',
-    sec_danger:'אזור סכנה',reset_btn:'🔄 אפס את כל הכמויות ל-0',reset_confirm:'לאפס את כל הכמויות ל-0?',
-    ep_name:'שם',ep_target:'יעד',ep_cat:"קטג'",ep_loc:'מיקום',ep_save:'שמור',ep_del:'מחק פריט',ep_no_bag:'ללא',
-    del_confirm:'למחוק פריט זה?',cat_del_confirm:c=>`למחוק "${c}"? הפריטים יועברו לקטגוריה הראשונה`,
-    empty_list:'הרשימה ריקה',empty_hint:'לחץ "+ הוסף פריט" כדי להתחיל',empty_filter:'אין פריטים להצגה',
-    loc_none:'—',loc_bag:'🎒 תיק',loc_closet:'🗄️ ארון',
-    lang_label:'EN',dir:'rtl',
-  },
-  en:{
-    title:'Base Gear',sub_empty:'Empty list',sub_full:(f,tt)=>`${f}/${tt} full`,
-    stat_items:'Items',stat_full:'Full',stat_miss:'Missing',prog_label:'List completion',
-    chip_all:'All',chip_miss:'Missing',chip_full:'Full',chip_bag:'🎒 Bag',chip_closet:'🗄️ Closet',
-    fab:'+ Add Item',sheet_title:'Add Item',sh_name_ph:'Item name...',sh_qty_ph:'Target',sh_add:'Add to list',sh_done:'Done',
-    search_ph:'Search items...',
-    pack_title:'📦 Pack Mode',pack_tab_base:'📦 To Base',pack_tab_bag:'🎒 Bag',
-    pack_prog_base:'Packed:',pack_prog_bag:'In bag:',
-    pack_need:n=>`Need ${n}`,pack_spare:n=>`Spare +${n}`,
-    pack_done_base:'🎉 All packed! Ready for base.',pack_done_bag:'✓ All in bag! Ready to go.',pack_no_bag:'🎒 No bag items.\nTag items with 🎒 in their edit panel.',
-    settings_title:'Settings',sec_cats:'Categories',cat_ph:'New category...',add_tag:'Add',close:'Close',
-    sec_data:'Data',export_label:'Export list',import_label:'Import list',
-    sec_danger:'Danger zone',reset_btn:'🔄 Reset all quantities to 0',reset_confirm:'Reset all quantities to 0?',
-    ep_name:'Name',ep_target:'Target',ep_cat:'Cat',ep_loc:'Location',ep_save:'Save',ep_del:'Delete item',ep_no_bag:'None',
-    del_confirm:'Delete this item?',cat_del_confirm:c=>`Delete "${c}"? Items will move to first category`,
-    empty_list:'List is empty',empty_hint:'Tap "+ Add Item" to get started',empty_filter:'No items to show',
-    loc_none:'—',loc_bag:'🎒 Bag',loc_closet:'🗄️ Closet',
-    lang_label:'עב',dir:'ltr',
-  }
-};
-let lang=localStorage.getItem(K_LANG)||'he';
-function t(){ return STRINGS[lang]; }
+// ── OVERLAYS (with Android back-button support) ───────────────────────────────
+function openOverlay(id) {
+  const o = document.getElementById(id);
+  clearTimeout(o._t);
+  o.hidden = false;
+  requestAnimationFrame(() => requestAnimationFrame(() => o.classList.add('show')));
+  document.body.classList.add('locked');
+  if (id === 'itemSheet' && !(history.state && history.state.ov)) history.pushState({ ov: id }, '');
+}
+function hideOverlay(id) {
+  const o = document.getElementById(id);
+  o.classList.remove('show');
+  o._t = setTimeout(() => {
+    o.hidden = true;
+    if (!document.querySelector('.overlay.show')) document.body.classList.remove('locked');
+  }, 220);
+}
+function closeOverlay(id) {
+  if (id === 'itemSheet' && history.state && history.state.ov === id) history.back();  // popstate hides it
+  else hideOverlay(id);
+}
+window.addEventListener('popstate', () => {
+  if ($('#confirm').classList.contains('show')) confirmDone(false);
+  if ($('#itemSheet').classList.contains('show')) hideOverlay('itemSheet');
+});
 
-function toggleLang(){
-  lang=lang==='he'?'en':'he';
-  localStorage.setItem(K_LANG,lang);
-  applyLang(); render();
+let confirmCb = null;
+function confirmDialog(msg, sub, okLabel) {
+  return new Promise(resolve => {
+    confirmCb = resolve;
+    $('#confirmMsg').textContent = msg;
+    $('#confirmSub').textContent = sub || '';
+    $('#confirmYes').textContent = okLabel || t('confirm');
+    $('#confirmNo').textContent = t('cancel');
+    openOverlay('confirm');
+    setTimeout(() => $('#confirmNo').focus(), 50);
+  });
 }
-function applyLang(){
-  const s=t();
-  document.documentElement.lang=lang; document.documentElement.dir=s.dir;
-  document.documentElement.style.setProperty('--fade-dir', lang==='he'?'left':'right');
-  document.getElementById('langBtn').textContent=s.lang_label;
-  setText('topbarTitle',s.title); setText('fabBtn',s.fab);
-  setText('chipAll',s.chip_all); setText('chipMissing',s.chip_miss); setText('chipFull',s.chip_full);
-  setText('chipBag',s.chip_bag); setText('chipCloset',s.chip_closet);
-  setText('progLabel',s.prog_label);
-  setText('statLItems',s.stat_items); setText('statLFull',s.stat_full); setText('statLMiss',s.stat_miss);
-  setAttr('sName','placeholder',s.sh_name_ph); setAttr('sQty','placeholder',s.sh_qty_ph);
-  setText('sheetTitle',s.sheet_title); setText('sheetAddBtn',s.sh_add); setText('sheetDoneBtn',s.sh_done);
-  setAttr('searchInput','placeholder',s.search_ph);
-  setText('sLoc1lbl',lang==='he'?'תיק':'Bag'); setText('sLoc2lbl',lang==='he'?'ארון':'Closet');
-  setText('packTitle',s.pack_title); setText('packTabBase',s.pack_tab_base); setText('packTabHome',s.pack_tab_bag); setText('packCloseBtn',s.close);
-  setText('settingsTitle',s.settings_title); setText('secCatsTitle',s.sec_cats);
-  setAttr('newCat','placeholder',s.cat_ph); setText('addCatBtn',s.add_tag);
-  setText('secDataTitle',s.sec_data); setText('exportLabel',s.export_label); setText('importLabel',s.import_label);
-  setText('secDangerTitle',s.sec_danger); setText('resetBtn',s.reset_btn);
-  setText('settingsCloseBtn',s.close);
-  refreshCatUI();
+function confirmDone(v) {
+  hideOverlay('confirm');
+  if (confirmCb) { const cb = confirmCb; confirmCb = null; cb(v); }
 }
-function setText(id,v){ const e=document.getElementById(id); if(e) e.textContent=v; }
-function setAttr(id,a,v){ const e=document.getElementById(id); if(e) e.setAttribute(a,v); }
 
-// ── EXPORT / IMPORT ───────────────────────────────────────────────────────────
-function exportData(){
-  const blob=new Blob([JSON.stringify({version:2,exported:new Date().toISOString(),items,cats},null,2)],{type:'application/json'});
-  const url=URL.createObjectURL(blob), a=document.createElement('a');
-  a.href=url; a.download=`base-inventory-${new Date().toISOString().slice(0,10)}.json`; a.click(); URL.revokeObjectURL(url);
+// ── TOAST (with undo) ─────────────────────────────────────────────────────────
+let toastTimer = null, toastUndo = null;
+function toast(msg, undo) {
+  $('#toastMsg').textContent = msg;
+  toastUndo = undo || null;
+  const u = $('#toastUndo'); u.hidden = !undo; u.textContent = t('undo');
+  const el = $('#toast'); el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.classList.remove('show'); toastUndo = null; }, undo ? 5000 : 2400);
 }
-function importData(e){
-  const file=e.target.files[0]; if(!file) return;
-  const reader=new FileReader();
-  reader.onload=async ev=>{
-    try{
-      const data=JSON.parse(ev.target.result);
-      if(!Array.isArray(data.items)) throw new Error();
-      const ok=await showConfirm(lang==='he'?'ייבא רשימה?':'Import list?',
-        lang==='he'?`יוחלפו ${items.length} פריטים ב-${data.items.length} חדשים`:`Replace ${items.length} items with ${data.items.length}`,
-        lang==='he'?'ייבא':'Import');
-      if(!ok){e.target.value='';return;}
-      items=data.items; if(Array.isArray(data.cats)) cats=data.cats;
-      save(); refreshCatUI(); applyLang(); render();
-      const msg=document.getElementById('importMsg');
-      msg.textContent=(lang==='he'?`✓ יובאו ${items.length} פריטים`:`✓ Imported ${items.length} items`);
-      msg.style.display='block'; setTimeout(()=>msg.style.display='none',3000);
-    }catch{
-      const msg=document.getElementById('importMsg');
-      msg.style.color='var(--danger)'; msg.textContent=lang==='he'?'✗ קובץ לא תקין':'✗ Invalid file';
-      msg.style.display='block'; setTimeout(()=>{msg.style.display='none';msg.style.color='var(--ok)';},3000);
+
+// ── DATA ──────────────────────────────────────────────────────────────────────
+function exportData() {
+  const data = { version: 3, exported: new Date().toISOString(), items: S.items, cats: S.cats, pinned: S.pinned };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = `base-inventory-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  S.prefs.lastExport = Date.now(); save(); renderSettings();
+}
+
+function importData(file) {
+  const reader = new FileReader();
+  reader.onload = async ev => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      if (!Array.isArray(data.items)) throw new Error('bad');
+      const incoming = normalizeItems(data.items);
+      const ok = await confirmDialog(t('import_c'), t('import_s', S.items.length, incoming.length), t('import_ok_btn'));
+      if (!ok) return;
+      const snap = snapshot();
+      S.items = incoming;
+      S.cats = Array.isArray(data.cats) ? data.cats.filter(c => typeof c === 'string' && c) : [];
+      healCats();
+      S.pinned = (Array.isArray(data.pinned) ? data.pinned : S.pinned).filter(c => S.cats.includes(c));
+      S.pack = { done: [], prev: {} };
+      save(); renderAll();
+      toast(t('imported', S.items.length), () => restore(snap));
+    } catch {
+      toast(t('import_bad'));
     }
-    e.target.value='';
   };
   reader.readAsText(file);
 }
 
+function snapshot() { return JSON.parse(JSON.stringify({ items: S.items, cats: S.cats, pinned: S.pinned, pack: S.pack })); }
+function restore(snap) { Object.assign(S, snap); save(); renderAll(); }
+
+async function resetQty() {
+  const ok = await confirmDialog(t('reset_c'), t('reset_s'), t('reset_btn'));
+  if (!ok) return;
+  const snap = snapshot();
+  S.items.forEach(i => { i.qty = 0; });
+  S.pack = { done: [], prev: {} };
+  save(); renderAll();
+  toast(t('reset_done'), () => restore(snap));
+}
+
+async function wipeAll() {
+  const ok = await confirmDialog(t('wipe_c'), t('wipe_s'), t('delete'));
+  if (!ok) return;
+  const snap = snapshot();
+  S.items = []; S.cats = []; S.pinned = []; S.pack = { done: [], prev: {} };
+  S.filter = { status: 'all', loc: '', cat: '', q: '' }; $('#q').value = '';
+  save(); renderAll();
+  toast(t('wiped'), () => restore(snap));
+}
+
+// ── VIEW / THEME / LANG ───────────────────────────────────────────────────────
+function setView(v) {
+  S.view = v;
+  try { localStorage.setItem(K.view, v); } catch {}
+  ['inv', 'pack', 'settings'].forEach(x => { $('#view-' + x).hidden = x !== v; });
+  document.querySelectorAll('.tab').forEach(b => {
+    const on = b.dataset.v === v;
+    b.classList.toggle('active', on);
+    if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+  document.body.dataset.view = v;
+  renderAll();
+  window.scrollTo(0, 0);
+}
+
+function renderAll() {
+  renderTop(); renderBadge();
+  if (S.view === 'inv') renderInv();
+  else if (S.view === 'pack') renderPack();
+  else renderSettings();
+}
+
+function applyTheme() {
+  const th = S.prefs.theme;
+  document.documentElement.dataset.theme = th;
+  const dark = th === 'dark' || (th === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#0b0d14' : '#f4f5fb');
+}
+
+function applyLang() {
+  document.documentElement.lang = S.lang;
+  document.documentElement.dir = t('dir');
+  document.title = t('title');
+  $('#langBtn').textContent = t('lang_btn');
+  document.querySelectorAll('[data-i18n]').forEach(e => { e.textContent = t(e.dataset.i18n); });
+  document.querySelectorAll('[data-i18n-ph]').forEach(e => { e.placeholder = t(e.dataset.i18nPh); });
+}
+
+function setLang(l) {
+  S.lang = l;
+  try { localStorage.setItem(K.lang, l); } catch {}
+  applyLang(); renderAll();
+}
+
+// ── EVENTS ────────────────────────────────────────────────────────────────────
+const ACTIONS = {
+  'view': el => setView(el.dataset.v),
+  'toggle-lang': () => setLang(S.lang === 'he' ? 'en' : 'he'),
+  'add': () => openItemSheet(null),
+  'edit': (el, id) => openItemSheet(id),
+  'inc': (el, id) => changeQty(id, 1),
+  'dec': (el, id) => changeQty(id, -1),
+  'qty-input': (el, id) => startQtyEdit(el, id),
+
+  'status': el => { S.filter.status = el.dataset.v; renderInv(); },
+  'loc': el => {
+    S.filter.loc = S.filter.loc === el.dataset.v ? '' : el.dataset.v;
+    if (S.view !== 'inv') setView('inv'); else renderInv();
+  },
+  'cat': el => { S.filter.cat = S.filter.cat === el.dataset.v ? '' : el.dataset.v; renderInv(); },
+  'clear-q': () => { S.filter.q = ''; $('#q').value = ''; renderInv(); $('#q').focus(); },
+  'clear-filters': () => { S.filter = { status: 'all', loc: '', cat: '', q: '' }; $('#q').value = ''; renderInv(); },
+  'toggle-group': el => {
+    const c = el.dataset.v, i = S.collapsed.indexOf(c);
+    if (i >= 0) S.collapsed.splice(i, 1); else S.collapsed.push(c);
+    save(); renderList();
+  },
+
+  'pack-toggle': (el, id) => packToggle(id),
+  'pack-reset': () => packReset(),
+  'pack-share': () => shareText(listText('pack')),
+
+  'close-sheet': () => closeOverlay('itemSheet'),
+  'f-step': el => {
+    const inp = el.dataset.f === 'target' ? $('#fTarget') : $('#fQty');
+    const min = el.dataset.f === 'target' ? 1 : 0;
+    inp.value = Math.max(min, (parseInt(inp.value, 10) || 0) + Number(el.dataset.d));
+    buzz(); renderQtyHint();
+  },
+  'f-fill': () => { $('#fQty').value = formNums().target; buzz(); renderQtyHint(); },
+  'f-cat': el => { form.cat = el.dataset.v; $('#fNewCatRow').hidden = true; renderFormCats(); },
+  'f-newcat': () => { $('#fNewCatRow').hidden = false; $('#fNewCat').focus(); },
+  'f-newcat-ok': () => addCatFromForm(),
+  'f-loc': el => { form.loc = el.dataset.v; renderFormLoc(); },
+  'f-save': el => submitForm(!!el.dataset.more),
+  'f-delete': () => deleteItem(form.id),
+  'dup-edit': (el, id) => fillForm(id),
+
+  'confirm-yes': () => confirmDone(true),
+  'confirm-no': () => confirmDone(false),
+  'undo': () => {
+    const fn = toastUndo; toastUndo = null;
+    $('#toast').classList.remove('show');
+    if (fn) fn();
+  },
+
+  'set-lang': el => setLang(el.dataset.v),
+  'set-theme': el => { S.prefs.theme = el.dataset.v; save(); applyTheme(); renderSettings(); },
+  'set-sort': el => { S.prefs.sort = el.dataset.v; save(); renderSettings(); },
+  'cat-pin': el => {
+    const c = el.dataset.v, i = S.pinned.indexOf(c);
+    if (i >= 0) S.pinned.splice(i, 1); else S.pinned.push(c);
+    save(); renderSettings();
+  },
+  'cat-rename': el => renameCat(el, el.dataset.v),
+  'cat-del': el => deleteCat(el.dataset.v),
+  'export': () => exportData(),
+  'import': () => $('#importFile').click(),
+  'copy-text': () => shareText(listText('all')),
+  'starter': () => addStarter(),
+  'reset-qty': () => resetQty(),
+  'wipe': () => wipeAll(),
+};
+
+function addCatFromForm() {
+  const v = $('#fNewCat').value.trim();
+  if (!v) { $('#fNewCat').focus(); return; }
+  if (!S.cats.includes(v)) { S.cats.push(v); save(); }
+  form.cat = v; $('#fNewCat').value = ''; $('#fNewCatRow').hidden = true;
+  renderFormCats();
+}
+
+function bindEvents() {
+  document.addEventListener('click', e => {
+    const el = e.target.closest('[data-action]');
+    if (!el || el.disabled) return;
+    const fn = ACTIONS[el.dataset.action]; if (!fn) return;
+    const id = el.dataset.id != null ? Number(el.dataset.id) : null;
+    fn(el, id, e);
+  });
+
+  // tap on the dimmed backdrop closes overlays
+  document.querySelectorAll('.overlay').forEach(o => o.addEventListener('click', e => {
+    if (e.target !== o) return;
+    if (o.id === 'confirm') confirmDone(false); else closeOverlay(o.id);
+  }));
+
+  $('#q').addEventListener('input', e => { S.filter.q = e.target.value; renderFilters(); renderList(); });
+  $('#fName').addEventListener('input', () => { $('#fName').classList.remove('invalid'); checkDup(); });
+  ['#fTarget', '#fQty'].forEach(s => $(s).addEventListener('input', renderQtyHint));
+  ['#fName', '#fNote'].forEach(s => $(s).addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); submitForm(form.mode === 'add'); }
+  }));
+  $('#fNewCat').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addCatFromForm(); } });
+  // select-all on focus makes typing a new number painless
+  ['#fTarget', '#fQty'].forEach(s => $(s).addEventListener('focus', e => e.target.select()));
+
+  document.addEventListener('change', e => {
+    if (e.target.id === 'hidePacked') { S.prefs.hidePacked = e.target.checked; save(); renderPack(); }
+    if (e.target.id === 'importFile') { const f = e.target.files[0]; if (f) importData(f); e.target.value = ''; }
+  });
+  document.addEventListener('submit', e => {
+    if (e.target.dataset.form !== 'add-cat') return;
+    e.preventDefault();
+    const inp = $('#newCat'), v = inp.value.trim();
+    if (!v) return;
+    if (S.cats.includes(v)) { toast(t('cat_exists')); return; }
+    S.cats.push(v); save(); renderSettings(); $('#newCat').focus();
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if ($('#confirm').classList.contains('show')) confirmDone(false);
+    else if ($('#itemSheet').classList.contains('show')) closeOverlay('itemSheet');
+  });
+
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
+  // keep multiple open tabs in sync
+  window.addEventListener('storage', e => { if (e.key && e.key.startsWith('base-inv')) { load(); renderAll(); } });
+}
+
+// ── I18N ──────────────────────────────────────────────────────────────────────
+const STRINGS = {
+  he: {
+    dir: 'rtl', lang_btn: 'EN', title: 'ציוד בבסיס',
+    tab_inv: 'ציוד', tab_pack: 'אריזה', tab_settings: 'הגדרות', fab: 'פריט',
+    sub: (f, n) => `${f} מתוך ${n} במקום`, sub_empty: 'בוא נבנה את הרשימה',
+    search_ph: 'חיפוש פריט או הערה...',
+    st_all: 'הכל', st_missing: 'חסר', st_full: 'מלא',
+    loc_bag: 'תיק', loc_closet: 'ארון', loc_none: 'ללא מיקום',
+    loc_bag_long: 'נוסע איתי', loc_bag_desc: 'בתיק בכל יציאה וחזרה',
+    loc_closet_long: 'נשאר בבסיס', loc_closet_desc: 'קבוע בארון, לא זז',
+    loc_none_desc: 'בלי מיקום קבוע',
+    welcome_t: 'ברוך הבא!', welcome_d: 'רשום את הציוד שלך פעם אחת — ותמיד תדע מה חסר בבסיס ומה לארוז לפני יציאה.',
+    welcome_pack: 'רשימת אריזה אוטומטית לפני כל יציאה',
+    add_first: 'הוסף פריט', starter: 'רשימה בסיסית מוכנה',
+    hero_miss_t: n => n === 1 ? 'חסר פריט אחד' : `חסרים ${n} פריטים`,
+    hero_miss_d: n => `${n} יחידות להשלים בבסיס`,
+    hero_full_t: 'הכל במקום 💪', hero_full_d: 'אין מה להביא כרגע',
+    go_pack: 'לאריזה',
+    need: n => `חסר ${n}`, spare: n => `+${n} עודף`, need_items: n => `${n} חסרים`,
+    no_cat: 'ללא קטגוריה', empty_filter: 'אין פריטים שמתאימים לסינון', clear_filters: 'נקה סינון',
+    sh_add: 'פריט חדש', sh_edit: 'עריכת פריט',
+    f_name: 'שם הפריט', f_name_ph: 'למשל: גרביים',
+    f_target: 'כמה צריך', f_qty: 'כמה יש', f_fill: 'יש לי הכל',
+    hint_need: n => `חסר ${n} —`, hint_full: 'בדיוק מה שצריך', hint_spare: n => `${n} עודף`,
+    f_cat: 'קטגוריה', f_new_cat: 'חדשה', f_new_cat_ph: 'שם קטגוריה...',
+    f_loc: 'איפה זה נמצא?', f_note: 'הערה', f_note_ph: 'למשל: מידה 42, בכיס הצד', optional: '(לא חובה)',
+    add: 'הוסף', add_more: 'הוסף ועוד', save: 'שמור', delete: 'מחק', cancel: 'ביטול', confirm: 'אשר', undo: 'בטל',
+    dup: n => `"${n}" כבר ברשימה`, dup_edit: 'לערוך אותו',
+    added: n => `נוסף: ${n}`, deleted: n => `נמחק: ${n}`,
+    pack_bring: 'להביא לבסיס', pack_bring_d: 'חסר בבסיס — לארוז מהבית',
+    pack_bag: 'צ׳קליסט תיק', pack_bag_d: 'מה שנוסע איתי בכל פעם',
+    pack_left: n => n === 1 ? 'נשאר פריט אחד' : `נשארו ${n} לארוז`,
+    pack_hint: 'סימון פריט "להביא" מעדכן את הכמות בבסיס',
+    pack_ready_t: '🎉 מוכן לצאת!', pack_ready_d: 'הכל ארוז. דרך צלחה!',
+    pack_nothing_t: 'אין מה לארוז', pack_nothing_d: 'הבסיס מלא ואין פריטי תיק',
+    bring_n: n => `להביא ${n}`,
+    pack_empty_bring: 'אין מה להביא — הבסיס מלא ✓', pack_empty_bag: 'אין פריטי תיק. בעריכת פריט בחר "🎒 נוסע איתי".',
+    pack_sec_done: 'הכל ארוז כאן', pack_no_items: 'הרשימה ריקה — הוסף ציוד כדי לקבל רשימת אריזה',
+    pack_share: 'שתף', pack_reset: 'יציאה חדשה', pack_hide: 'הסתר ארוזים', pack_reset_done: 'הצ׳קליסט אופס',
+    share_head: d => `🧳 רשימת אריזה (${d})`, copied: 'הועתק ללוח 📋', copy_fail: 'ההעתקה נכשלה',
+    set_display: 'תצוגה', set_lang: 'שפה', set_theme: 'ערכת צבע', th_dark: 'כהה', th_light: 'בהיר', th_auto: 'אוטו׳',
+    set_sort: 'מיון בקטגוריה', sort_missing: 'חסרים קודם', sort_az: 'א-ב',
+    set_cats: 'קטגוריות', cat_ph: 'קטגוריה חדשה...', n_items: n => `${n} פריטים`, no_cats: 'אין קטגוריות עדיין',
+    cats_hint: '📌 הצמדה מעלה קטגוריה לראש הרשימה · לחיצה על שם משנה אותו',
+    pin: 'הצמד למעלה', rename: 'שנה שם', cat_exists: 'קטגוריה בשם הזה כבר קיימת',
+    cat_del_c: c => `למחוק את "${c}"?`, cat_del_s: n => `${n} פריטים יעברו ל"ללא קטגוריה"`,
+    set_data: 'גיבוי ונתונים', export: 'ייצוא לקובץ', import: 'ייבוא מקובץ', copy_text: 'העתק כטקסט',
+    backup_never: 'עוד לא גיבית — הנתונים שמורים רק במכשיר הזה', backup_last: d => `גיבוי אחרון: ${d}`,
+    starter_added: n => `נוספו ${n} פריטים נפוצים`, starter_none: 'כל הפריטים הנפוצים כבר ברשימה',
+    import_c: 'לייבא רשימה?', import_s: (a, b) => `${a} הפריטים הנוכחיים יוחלפו ב-${b} מהקובץ`, import_ok_btn: 'ייבא',
+    imported: n => `יובאו ${n} פריטים`, import_bad: 'קובץ לא תקין',
+    set_danger: 'אזור סכנה', reset_qty: 'אפס כמויות ל-0', reset_c: 'לאפס את כל הכמויות ל-0?',
+    reset_s: 'שימושי לספירת מלאי מחדש. היעדים נשמרים.', reset_btn: 'אפס', reset_done: 'הכמויות אופסו',
+    wipe: 'מחק את כל הרשימה', wipe_c: 'למחוק את כל הפריטים והקטגוריות?', wipe_s: 'אפשר לבטל רק מיד אחרי. מומלץ לייצא קודם.', wiped: 'הרשימה נמחקה',
+    save_fail: 'השמירה נכשלה — אין מקום באחסון',
+    about: 'הנתונים נשמרים רק בדפדפן הזה. אפשר להוסיף את האפליקציה למסך הבית ולהשתמש בה גם בלי קליטה.',
+  },
+  en: {
+    dir: 'ltr', lang_btn: 'עב', title: 'Base Gear',
+    tab_inv: 'Gear', tab_pack: 'Pack', tab_settings: 'Settings', fab: 'Item',
+    sub: (f, n) => `${f} of ${n} in place`, sub_empty: "Let's build your list",
+    search_ph: 'Search items or notes...',
+    st_all: 'All', st_missing: 'Missing', st_full: 'Full',
+    loc_bag: 'Bag', loc_closet: 'Closet', loc_none: 'No location',
+    loc_bag_long: 'Travels with me', loc_bag_desc: 'In the bag every trip',
+    loc_closet_long: 'Stays at base', loc_closet_desc: 'Lives in the closet',
+    loc_none_desc: 'No fixed spot',
+    welcome_t: 'Welcome!', welcome_d: "List your gear once — always know what's missing at base and what to pack before you leave.",
+    welcome_pack: 'an automatic packing list before every trip',
+    add_first: 'Add item', starter: 'Starter list',
+    hero_miss_t: n => n === 1 ? '1 item missing' : `${n} items missing`,
+    hero_miss_d: n => `${n} units to restock at base`,
+    hero_full_t: 'All in place 💪', hero_full_d: 'Nothing to bring right now',
+    go_pack: 'Pack',
+    need: n => `Need ${n}`, spare: n => `+${n} spare`, need_items: n => `${n} missing`,
+    no_cat: 'Uncategorized', empty_filter: 'No items match these filters', clear_filters: 'Clear filters',
+    sh_add: 'New item', sh_edit: 'Edit item',
+    f_name: 'Item name', f_name_ph: 'e.g. Socks',
+    f_target: 'How many I need', f_qty: 'How many I have', f_fill: 'I have them all',
+    hint_need: n => `Missing ${n} —`, hint_full: 'Exactly what you need', hint_spare: n => `${n} spare`,
+    f_cat: 'Category', f_new_cat: 'New', f_new_cat_ph: 'Category name...',
+    f_loc: 'Where does it live?', f_note: 'Note', f_note_ph: 'e.g. size 42, side pocket', optional: '(optional)',
+    add: 'Add', add_more: 'Add another', save: 'Save', delete: 'Delete', cancel: 'Cancel', confirm: 'Confirm', undo: 'Undo',
+    dup: n => `"${n}" is already on the list`, dup_edit: 'Edit it',
+    added: n => `Added: ${n}`, deleted: n => `Deleted: ${n}`,
+    pack_bring: 'Bring to base', pack_bring_d: 'Missing at base — pack from home',
+    pack_bag: 'Bag checklist', pack_bag_d: 'Things that travel with me every time',
+    pack_left: n => n === 1 ? '1 item left' : `${n} items left`,
+    pack_hint: 'Ticking a "bring" item updates the count at base',
+    pack_ready_t: '🎉 Ready to go!', pack_ready_d: 'Everything is packed. Safe trip!',
+    pack_nothing_t: 'Nothing to pack', pack_nothing_d: 'Base is fully stocked and no bag items',
+    bring_n: n => `Bring ${n}`,
+    pack_empty_bring: 'Nothing to bring — base is stocked ✓', pack_empty_bag: 'No bag items. Edit an item and choose "🎒 Travels with me".',
+    pack_sec_done: 'All packed here', pack_no_items: 'Your list is empty — add gear to get a packing list',
+    pack_share: 'Share', pack_reset: 'New trip', pack_hide: 'Hide packed', pack_reset_done: 'Checklist cleared',
+    share_head: d => `🧳 Packing list (${d})`, copied: 'Copied to clipboard 📋', copy_fail: 'Copy failed',
+    set_display: 'Display', set_lang: 'Language', set_theme: 'Theme', th_dark: 'Dark', th_light: 'Light', th_auto: 'Auto',
+    set_sort: 'Sort in category', sort_missing: 'Missing first', sort_az: 'A–Z',
+    set_cats: 'Categories', cat_ph: 'New category...', n_items: n => `${n} items`, no_cats: 'No categories yet',
+    cats_hint: '📌 Pin moves a category to the top · tap a name to rename it',
+    pin: 'Pin to top', rename: 'Rename', cat_exists: 'A category with that name already exists',
+    cat_del_c: c => `Delete "${c}"?`, cat_del_s: n => `${n} items will become uncategorized`,
+    set_data: 'Backup & data', export: 'Export file', import: 'Import file', copy_text: 'Copy as text',
+    backup_never: "Never backed up — data lives only on this device", backup_last: d => `Last backup: ${d}`,
+    starter_added: n => `Added ${n} common items`, starter_none: 'All common items are already on your list',
+    import_c: 'Import list?', import_s: (a, b) => `Your ${a} items will be replaced with ${b} from the file`, import_ok_btn: 'Import',
+    imported: n => `Imported ${n} items`, import_bad: 'Invalid file',
+    set_danger: 'Danger zone', reset_qty: 'Reset counts to 0', reset_c: 'Reset all counts to 0?',
+    reset_s: 'Handy for a fresh stock count. Targets are kept.', reset_btn: 'Reset', reset_done: 'Counts reset',
+    wipe: 'Delete entire list', wipe_c: 'Delete all items and categories?', wipe_s: 'Undo is only available right after. Export first.', wiped: 'List deleted',
+    save_fail: 'Save failed — storage is full',
+    about: 'Data is stored only in this browser. Add the app to your home screen to use it offline.',
+  },
+};
+
+function t(key, ...args) {
+  const v = STRINGS[S.lang][key] ?? STRINGS.he[key] ?? key;
+  return typeof v === 'function' ? v(...args) : v;
+}
+
 // ── INIT ──────────────────────────────────────────────────────────────────────
-load(); refreshCatUI(); applyLang(); render();
+load();
+applyTheme();
+applyLang();
+bindEvents();
+setView(S.view);
+
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}

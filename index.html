@@ -1,143 +1,151 @@
 <!DOCTYPE html>
-<html lang="he" dir="rtl">
+<html lang="he" dir="rtl" data-theme="dark">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>ציוד בבסיס</title>
-<link rel="stylesheet" href="style.css?v=10">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700;800;900&display=swap">
+<link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
 
-<div class="topbar">
-  <div style="flex:1;min-width:0">
-    <div class="topbar-title" id="topbarTitle">ציוד בבסיס</div>
-    <span class="topbar-sub" id="topbarSub">טוען...</span>
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-logo" aria-hidden="true">🎖️</div>
+    <div class="brand-text">
+      <h1 data-i18n="title">ציוד בבסיס</h1>
+      <div class="brand-sub" id="topSub"></div>
+    </div>
   </div>
-  <button class="icon-btn" id="searchBtn" onclick="toggleSearch()" title="חיפוש">🔍</button>
-  <button class="icon-btn" onclick="showPack()" title="מצב אריזה">📦</button>
-  <button class="icon-btn" onclick="showSettings()" title="הגדרות">⚙️</button>
-  <button class="icon-btn" onclick="toggleLang()" id="langBtn">EN</button>
-</div>
+  <button class="icon-btn lang-btn" id="langBtn" data-action="toggle-lang" aria-label="Language">EN</button>
+</header>
 
-<div class="search-bar" id="searchBar">
-  <div class="search-inner">
-    <input class="search-input" id="searchInput" placeholder="חפש פריט..." oninput="render()" />
+<main class="main">
+  <!-- INVENTORY -->
+  <section class="view" id="view-inv">
+    <div id="hero"></div>
+    <div class="toolbar" id="toolbar">
+      <div class="search">
+        <span class="search-ico" aria-hidden="true">🔍</span>
+        <input id="q" type="search" autocomplete="off" data-i18n-ph="search_ph">
+        <button class="search-clear" data-action="clear-q" aria-label="Clear" hidden>✕</button>
+      </div>
+      <div class="filter-row">
+        <div class="seg seg-sm" id="statusSeg" role="tablist">
+          <button data-action="status" data-v="all" data-i18n="st_all"></button>
+          <button data-action="status" data-v="missing"><span data-i18n="st_missing"></span><span class="seg-count" id="cntMissing"></span></button>
+          <button data-action="status" data-v="full" data-i18n="st_full"></button>
+        </div>
+        <button class="chip chip-loc bag" data-action="loc" data-v="bag">🎒 <span data-i18n="loc_bag"></span></button>
+        <button class="chip chip-loc closet" data-action="loc" data-v="closet">🗄️ <span data-i18n="loc_closet"></span></button>
+      </div>
+      <div class="chips-scroll" id="catChips"></div>
+    </div>
+    <div id="list"></div>
+  </section>
+
+  <!-- PACK -->
+  <section class="view" id="view-pack" hidden>
+    <div id="packHero"></div>
+    <div id="packList"></div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="view" id="view-settings" hidden></section>
+</main>
+
+<button class="fab" id="fab" data-action="add"><span class="fab-plus" aria-hidden="true">+</span><span data-i18n="fab"></span></button>
+
+<nav class="tabbar" aria-label="Main">
+  <div class="tabbar-inner">
+    <button class="tab" data-action="view" data-v="inv"><span class="tab-ico" aria-hidden="true">📋</span><span data-i18n="tab_inv"></span></button>
+    <button class="tab" data-action="view" data-v="pack"><span class="tab-ico" aria-hidden="true">🧳</span><span data-i18n="tab_pack"></span><span class="tab-badge" id="packBadge" hidden></span></button>
+    <button class="tab" data-action="view" data-v="settings"><span class="tab-ico" aria-hidden="true">⚙️</span><span data-i18n="tab_settings"></span></button>
   </div>
-</div>
+</nav>
 
-<div class="main">
-  <div class="stats">
-    <div class="stat"><div class="stat-n" id="sTotal">0</div><div class="stat-l" id="statLItems">פריטים</div></div>
-    <div class="stat"><div class="stat-n grn" id="sFull">0</div><div class="stat-l" id="statLFull">מלא</div></div>
-    <div class="stat"><div class="stat-n red" id="sMiss">0</div><div class="stat-l" id="statLMiss">חסר</div></div>
-  </div>
-
-  <div class="prog-wrap">
-    <div class="prog-row"><span id="progLabel">כמה מהרשימה מלא</span><b id="sPct">0%</b></div>
-    <div class="prog-bg"><div class="prog-fill" id="sBar" style="width:0%"></div></div>
-  </div>
-
-  <div class="chips-outer"><div class="chips-wrap" id="chipsWrap">
-    <div class="chip active" onclick="setFilter('all')"     id="chipAll">הכל</div>
-    <div class="chip"        onclick="setFilter('missing')" id="chipMissing">חסר</div>
-    <div class="chip"        onclick="setFilter('full')"    id="chipFull">מלא</div>
-    <div class="chip loc-bag"  onclick="setLocFilter('bag')"    id="chipBag">🎒 תיק</div>
-    <div class="chip loc-clos" onclick="setLocFilter('closet')" id="chipCloset">🗄️ ארון</div>
-  </div></div>
-
-  <div id="itemList"></div>
-</div>
-
-<div class="fab-bar">
-  <button class="fab-btn" id="fabBtn" onclick="showAddSheet()">+ הוסף פריט</button>
-</div>
-
-<!-- ADD SHEET -->
-<div class="sheet-overlay" id="addSheet" style="display:none" onclick="if(event.target===this)hideAddSheet()">
-  <div class="sheet">
+<!-- ITEM SHEET (add + edit) -->
+<div class="overlay" id="itemSheet" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="isTitle">
     <div class="sheet-handle"></div>
-    <div class="sheet-title" id="sheetTitle">הוספת פריט</div>
-    <div class="sheet-row">
-      <input class="sheet-input" id="sName" placeholder="שם הפריט..." onkeydown="if(event.key==='Enter')document.getElementById('sQty').focus()">
-      <input class="sheet-num" id="sQty" type="number" placeholder="יעד" min="1" onkeydown="if(event.key==='Enter')submitAdd()">
+    <div class="sheet-head">
+      <h2 id="isTitle"></h2>
+      <button class="icon-btn" data-action="close-sheet" aria-label="Close">✕</button>
     </div>
-    <div class="sheet-row">
-      <select class="sheet-select" id="sCat"></select>
-    </div>
-    <div class="sheet-row" id="sLocRow">
-      <div class="seg" id="sLocSeg">
-        <button class="seg-btn active" onclick="setSLoc('')"       id="sLoc0">—</button>
-        <button class="seg-btn"        onclick="setSLoc('bag')"    id="sLoc1">🎒 <span id="sLoc1lbl">תיק</span></button>
-        <button class="seg-btn"        onclick="setSLoc('closet')" id="sLoc2">🗄️ <span id="sLoc2lbl">ארון</span></button>
+
+    <label class="field">
+      <span class="field-label" data-i18n="f_name"></span>
+      <input class="input input-lg" id="fName" autocomplete="off" enterkeyhint="done" data-i18n-ph="f_name_ph">
+    </label>
+    <div class="dup-hint" id="dupHint" hidden></div>
+
+    <div class="qty-grid">
+      <div class="qbox">
+        <span class="field-label" data-i18n="f_target"></span>
+        <div class="big-stepper">
+          <button data-action="f-step" data-f="target" data-d="-1" aria-label="-1">−</button>
+          <input id="fTarget" type="number" inputmode="numeric" min="1">
+          <button data-action="f-step" data-f="target" data-d="1" aria-label="+1">+</button>
+        </div>
+      </div>
+      <div class="qbox">
+        <span class="field-label" data-i18n="f_qty"></span>
+        <div class="big-stepper">
+          <button data-action="f-step" data-f="qty" data-d="-1" aria-label="-1">−</button>
+          <input id="fQty" type="number" inputmode="numeric" min="0">
+          <button data-action="f-step" data-f="qty" data-d="1" aria-label="+1">+</button>
+        </div>
       </div>
     </div>
-    <div class="add-success" id="addSuccess"></div>
-    <div style="display:flex;gap:8px;margin-top:4px">
-      <button class="sheet-add-btn" style="flex:1" id="sheetAddBtn" onclick="submitAdd()">הוסף לרשימה</button>
-      <button class="sheet-add-btn" style="flex:0 0 80px;background:var(--card2);color:var(--text)" onclick="hideAddSheet()" id="sheetDoneBtn">סגור</button>
+    <div class="qty-hint" id="qtyHint"></div>
+
+    <div class="field">
+      <span class="field-label" data-i18n="f_cat"></span>
+      <div class="pick-chips" id="fCats"></div>
+      <div class="newcat-row" id="fNewCatRow" hidden>
+        <input class="input" id="fNewCat" autocomplete="off" enterkeyhint="done" data-i18n-ph="f_new_cat_ph">
+        <button class="btn btn-soft" data-action="f-newcat-ok" data-i18n="add"></button>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="field-label" data-i18n="f_loc"></span>
+      <div class="loc-pick" id="fLoc"></div>
+    </div>
+
+    <label class="field">
+      <span class="field-label"><span data-i18n="f_note"></span> <small class="opt" data-i18n="optional"></small></span>
+      <input class="input" id="fNote" autocomplete="off" enterkeyhint="done" data-i18n-ph="f_note_ph">
+    </label>
+
+    <div class="sheet-actions" id="sheetActions"></div>
+  </div>
+</div>
+
+<!-- CONFIRM -->
+<div class="overlay overlay-center" id="confirm" hidden>
+  <div class="dialog" role="alertdialog" aria-modal="true">
+    <div class="dialog-msg" id="confirmMsg"></div>
+    <div class="dialog-sub" id="confirmSub"></div>
+    <div class="dialog-actions">
+      <button class="btn btn-ghost" data-action="confirm-no" id="confirmNo"></button>
+      <button class="btn btn-danger" data-action="confirm-yes" id="confirmYes"></button>
     </div>
   </div>
 </div>
 
-<!-- SETTINGS SHEET -->
-<div class="sheet-overlay" id="settingsSheet" style="display:none" onclick="if(event.target===this)hideSettings()">
-  <div class="sheet sheet-lg">
-    <div class="sheet-handle"></div>
-    <div class="sheet-title" id="settingsTitle">הגדרות</div>
+<div class="toast" id="toast" role="status" aria-live="polite"><span id="toastMsg"></span><button class="toast-undo" id="toastUndo" data-action="undo" hidden></button></div>
 
-    <div class="sheet-sec" id="secCatsTitle">קטגוריות</div>
-    <div class="tag-row">
-      <input class="tag-input" id="newCat" placeholder="קטגוריה חדשה..." onkeydown="if(event.key==='Enter')addCat()">
-      <button class="tag-add-btn" onclick="addCat()" id="addCatBtn">הוסף</button>
-    </div>
-    <div class="tags-list" id="catList"></div>
+<input type="file" id="importFile" accept=".json,application/json" hidden>
 
-    <div class="sheet-sec" id="secDataTitle">נתונים</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="tag-add-btn" onclick="exportData()" style="flex:1;text-align:center">📤 <span id="exportLabel">ייצא רשימה</span></button>
-      <button class="tag-add-btn" onclick="document.getElementById('importFile').click()" style="flex:1;text-align:center">📥 <span id="importLabel">ייבא רשימה</span></button>
-    </div>
-    <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(event)">
-    <div id="importMsg" style="font-size:12px;color:var(--ok);margin-top:8px;display:none"></div>
-
-    <div class="sheet-sec" id="secDangerTitle">אזור סכנה</div>
-    <button class="reset-btn" onclick="resetAllQty()" id="resetBtn">🔄 אפס את כל הכמויות ל-0</button>
-
-    <button class="sheet-add-btn" onclick="hideSettings()" style="margin-top:14px" id="settingsCloseBtn">סגור</button>
-  </div>
-</div>
-
-<!-- PACK MODE SHEET -->
-<div class="sheet-overlay" id="packSheet" style="display:none" onclick="if(event.target===this)hidePack()">
-  <div class="sheet sheet-lg">
-    <div class="sheet-handle"></div>
-    <div class="sheet-title" id="packTitle">📦 מצב אריזה</div>
-    <div class="pack-tabs">
-      <button class="pack-tab active" id="packTabBase" onclick="setPackTab('tobase')">📦 לבסיס</button>
-      <button class="pack-tab" id="packTabHome" onclick="setPackTab('tobag')">🎒 תיק</button>
-    </div>
-    <div class="pack-progress">
-      <div class="pack-prog-row"><span id="packProgLabel">ארזת:</span><b id="packProgPct">0%</b></div>
-      <div class="pack-prog-bg"><div class="pack-prog-fill" id="packProgFill" style="width:0%"></div></div>
-    </div>
-    <div id="packList"></div>
-    <button class="sheet-add-btn" onclick="hidePack()" style="margin-top:8px" id="packCloseBtn">סגור</button>
-  </div>
-</div>
-
-<!-- CONFIRM DIALOG -->
-<div class="sheet-overlay" id="confirmDialog" style="display:none">
-  <div class="sheet" style="padding-bottom:22px">
-    <div class="sheet-handle"></div>
-    <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:7px" id="confirmMsg"></div>
-    <div style="font-size:13px;color:var(--dim);margin-bottom:18px" id="confirmSub"></div>
-    <div style="display:flex;gap:10px">
-      <button onclick="confirmResolve(false)" style="flex:1;height:44px;background:var(--card2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:'Heebo',sans-serif;font-size:14px;cursor:pointer" id="confirmCancel">ביטול</button>
-      <button onclick="confirmResolve(true)"  style="flex:1;height:44px;background:var(--danger);border:none;border-radius:var(--radius);color:#fff;font-family:'Heebo',sans-serif;font-size:14px;font-weight:700;cursor:pointer" id="confirmOk">מחק</button>
-    </div>
-  </div>
-</div>
-
-<script src="app.js?v=10"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>
